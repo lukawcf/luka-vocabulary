@@ -66,6 +66,7 @@ textarea{width:100%;font:16px/1.5 var(--body);color:var(--ink);background:var(--
 @keyframes pop{from{transform:scale(.2) rotate(-20deg);opacity:0}to{transform:none;opacity:1}}
 @media (prefers-reduced-motion:reduce){.big{animation:none}}
 .note{font-size:13px;padding:10px 12px;border-radius:8px;background:var(--sunk);color:var(--muted)}
+#sayState:empty{display:none}
 .done-mark{font-size:48px}
 @media (max-width:480px){.word{font-size:32px}.panel{padding:18px}}
 </style>
@@ -183,7 +184,13 @@ function current(){
   return null;
 }
 
-/* ---------------- American pronunciation ---------------- */
+/* ---------------- American pronunciation ----------------
+   Browser speech synthesis is unreliable on phones: iOS mutes it with the silent switch, some
+   in-app browsers ship no voices, and Chrome can drop an utterance spoken right after cancel().
+   Single words therefore play a recorded US pronunciation where the page may load audio
+   (WORD_AUDIO), which also plays with the iPhone silent switch on; speech synthesis is the
+   fallback and reads sentences. */
+const WORD_AUDIO = w => `https://dict.youdao.com/dictvoice?type=2&audio=${encodeURIComponent(w)}`;
 let usVoice = null;
 function pickVoice(){
   try{
@@ -193,13 +200,40 @@ function pickVoice(){
   }catch(e){}
 }
 try{ pickVoice(); speechSynthesis.addEventListener("voiceschanged", pickVoice); }catch(e){}
-function speak(text, rate=0.85){
-  try{
-    speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = "en-US"; if(usVoice) u.voice = usVoice; u.rate = rate;
-    speechSynthesis.speak(u);
-  }catch(e){}
+const MUTE_TIP = /iPhone|iPad|iPod/i.test(navigator.userAgent)
+  ? "没有声音？把 iPhone 侧面的静音键关掉，再调大音量试试。"
+  : "没有声音？先检查音量。有的 App 内置浏览器不支持朗读，可以换 Chrome 或 Safari 打开。";
+function sayNote(msg){ const n = $("#sayState"); if(n) n.textContent = msg; }
+let player = null;
+// quiet: automatic playback when a word appears, which the browser may block; never show tips for it
+function speak(text, rate=0.85, quiet=false){
+  if(!quiet) sayNote("");
+  const word = text.trim();
+  if(WORD_AUDIO && word && !/\s/.test(word)){
+    let fell = false;
+    const fallback = () => { if(!fell){ fell = true; tts(text, rate, quiet); } };
+    try{
+      if(player) player.pause();
+      player = new Audio(WORD_AUDIO(word));
+      player.onerror = fallback;
+      player.play().catch(fallback);
+      return;
+    }catch(e){ fallback(); return; }
+  }
+  tts(text, rate, quiet);
+}
+function tts(text, rate, quiet){
+  const synth = window.speechSynthesis;
+  if(!synth || !window.SpeechSynthesisUtterance){ if(!quiet) sayNote("这个浏览器不支持朗读，换 Chrome 或 Safari 打开试试。"); return; }
+  if(!usVoice) pickVoice();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = "en-US"; if(usVoice) u.voice = usVoice; u.rate = rate;
+  let started = false;
+  u.onstart = () => { started = true; };
+  u.onerror = e => { if(!quiet && e.error!=="interrupted" && e.error!=="canceled") sayNote(MUTE_TIP); };
+  const go = () => { try{ synth.resume(); synth.speak(u); }catch(e){ if(!quiet) sayNote(MUTE_TIP); } };
+  if(synth.speaking || synth.pending){ synth.cancel(); setTimeout(go, 150); } else go();
+  if(!quiet) setTimeout(() => { if(!started) sayNote(MUTE_TIP); }, 2500);
 }
 let interacted = false;
 document.addEventListener("pointerdown", ()=>{ interacted = true; }, {once:true});
@@ -343,6 +377,7 @@ function render(){
       <div class="word">${esc(item.w)}</div>
       <button class="btn speak" data-act="say" aria-label="美式发音">${SPEAKER}美式发音</button>
     </div>
+    <p class="note" id="sayState"></p>
     ${meaningHTML(item, meaning)}
     ${past.length ? `<div><p class="sub">之前拿到 🌸 的句子</p><div class="list">${past.map(f=>`<div><span class="e">🌸</span><p>${esc(f.s)}</p></div>`).join("")}</div></div>` : ""}
     <textarea id="sent" placeholder="用 ${esc(item.w)} 自己造一个句子${past.length ? "，不要和之前的一样" : ""}">${esc(item.draft||"")}</textarea>
@@ -358,7 +393,6 @@ function render(){
     ${tries.length > 1 ? `<div><p class="sub">这次写过的句子</p><div class="list">${tries.slice(1).map(t=>`<div><span class="e">${t.verdict==="good"?"🌸":"💩"}</span><p>${esc(t.sentence)}</p></div>`).join("")}</div></div>` : ""}
   </div>`;
   syncAi();
-  if(interacted && lastSpoken !== item.w){ lastSpoken = item.w; speak(item.w); }
 }
 /* ---------------- voice input ----------------
    Uses the browser's speech recognition (American English) where the page may use the microphone.
@@ -379,10 +413,32 @@ function setMicUi(on){
   b.classList.toggle("primary", on);
   b.querySelector("span").textContent = on ? "停止" : "语音输入";
 }
-function toggleMic(){
+// Ask for the microphone explicitly first: the browser shows its permission prompt, and a denial
+// gets a clear message instead of speech recognition failing silently.
+let micGranted = false;
+async function ensureMic(){
+  if(micGranted) return true;
+  if(!navigator.mediaDevices?.getUserMedia) return true; // let speech recognition ask by itself
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({audio:true});
+    stream.getTracks().forEach(t=>t.stop());
+    micGranted = true; return true;
+  }catch(e){
+    const t = $("#dictTip");
+    if(t){
+      t.hidden = false;
+      t.textContent = e?.name==="NotFoundError"
+        ? "没有找到麦克风。接上麦克风或耳机后再试。"
+        : "麦克风权限被拒绝了。点浏览器地址栏左边的图标，把「麦克风」改成允许，然后刷新页面再试。手机上还要在系统设置里允许浏览器使用麦克风。";
+    }
+    return false;
+  }
+}
+async function toggleMic(){
   if(rec){ rec.stop(); return; }
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if(!SR || micBlocked){ showTip(); return; }
+  if(!(await ensureMic())) return;
   const box = $("#sent"); if(!box) return;
   const base = box.value ? box.value.replace(/\s*$/," ") : "";
   let r;

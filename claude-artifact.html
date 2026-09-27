@@ -58,6 +58,7 @@ textarea{width:100%;font:16px/1.5 var(--body);color:var(--ink);background:var(--
 @keyframes pop{from{transform:scale(.2) rotate(-20deg);opacity:0}to{transform:none;opacity:1}}
 @media (prefers-reduced-motion:reduce){.big{animation:none}}
 .note{font-size:13px;padding:10px 12px;border-radius:8px;background:var(--sunk);color:var(--muted)}
+#sayState:empty{display:none}
 .done-mark{font-size:48px}
 @media (max-width:480px){.word{font-size:32px}.panel{padding:18px}}
 </style>
@@ -71,7 +72,7 @@ textarea{width:100%;font:16px/1.5 var(--body);color:var(--ink);background:var(--
         <p class="muted small" id="mode"></p>
       </div>
     </div>
-    <button class="btn ghost" id="setBtn">设置</button>
+    <div class="row" style="flex-wrap:nowrap"><span class="muted small" id="sync"></span><button class="btn ghost" id="setBtn">设置</button></div>
   </header>
   <main id="view"></main>
   <p class="muted small">词库：雅思核心 3000 词，取自开源词典 <a href="https://github.com/skywind3000/ECDICT" style="color:var(--accent)">ECDICT</a>（Copyright (c) skywind3000，MIT License）</p>
@@ -111,7 +112,122 @@ try{
     }
   }
 }catch(e){ S = freshState(); }
-function save(){ try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} }
+function save(){ localSave(); schedulePush(); }
+
+/* ---------------- sync across devices (per claude.ai account) ----------------
+   Progress lives in the viewer's private db subtree data/users/<id>/, so the same account sees
+   the same words on phone and computer. localStorage stays as the offline copy.
+   Layout: "meta" (word order, extra words, today's plan, bonus batch) plus 16 card buckets
+   "c0".."cf", which keeps every document far below the 256 KiB limit as cards grow.
+   Merging: each card carries u (ms of its last change) and the newer card wins; a plan or bonus
+   batch for a later day/hour wins, and for the same one the copy with more finished words wins.
+   Buckets are written before meta, so a device that sees a new meta finds the cards in place. */
+const BUCKETS = 16;
+const DEV = Math.random().toString(36).slice(2);
+const IELTS_SET = new Set(IELTS.map(x=>x[0]));
+function bucketOf(w){ let h = 0; for(const ch of w.toLowerCase()) h = (h*31 + ch.charCodeAt(0)) >>> 0; return (h % BUCKETS).toString(16); }
+let db = null, uid = null, syncReady = false, pushTimer = null, pushing = Promise.resolve(), lastPushed = {};
+function setSync(msg){ const s = $("#sync"); if(s) s.textContent = msg; }
+function localSave(){ try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} }
+const userPath = name => `data/users/${uid}/${name}`;
+
+function packBuckets(){
+  const b = {};
+  for(let i=0;i<BUCKETS;i++) b[i.toString(16)] = {};
+  for(const [w,c] of Object.entries(S.cards)) b[bucketOf(w)][w] = c;
+  return b;
+}
+function schedulePush(){
+  if(!syncReady) return;
+  clearTimeout(pushTimer);
+  setSync("同步中…");
+  pushTimer = setTimeout(()=>{ pushing = pushing.then(pushNow); }, 1200);
+}
+async function pushNow(){
+  try{
+    for(const [k,cards] of Object.entries(packBuckets())){
+      const body = JSON.stringify(cards);
+      if(lastPushed[k] === body) continue;
+      await db.doc(userPath("c"+k)).set({cards});
+      lastPushed[k] = body;
+    }
+    await db.doc(userPath("meta")).set({
+      v:1, dev:DEV, updatedAt:Date.now(),
+      order:S.bank.map(x=>x.w), extra:S.bank.filter(x=>!IELTS_SET.has(x.w)),
+      plan:S.plan || null, bonus:S.bonus || null
+    });
+    setSync("已同步");
+  }catch(e){
+    setSync(e?.code==="quota_exceeded" ? "云端空间已满，进度只存在本机" : "同步失败，进度先存在本机");
+  }
+}
+async function pullRemote(){
+  const meta = await db.doc(userPath("meta")).get();
+  if(!meta.exists) return null;
+  const snaps = await Promise.all(Array.from({length:BUCKETS}, (_,i)=>db.doc(userPath("c"+i.toString(16))).get()));
+  const cards = {};
+  snaps.forEach((s,i)=>{
+    const c = (s.exists && s.data()?.cards) || {};
+    Object.assign(cards, c);
+    lastPushed[i.toString(16)] = JSON.stringify(c);
+  });
+  return {m:meta.data(), cards};
+}
+function newer(a, b, stamp){
+  if(!b) return a; if(!a) return b;
+  const sa = stamp(a), sb = stamp(b);
+  if(sa !== sb) return sa > sb ? a : b;
+  const done = p => (p.items||[]).filter(i=>i.done).length;
+  return done(b) > done(a) ? b : a;
+}
+const hourStamp = p => { const [d,h] = String(p.key).split("-").map(Number); return d*24 + h; };
+function mergeRemote({m, cards}){
+  const dict = new Map(IELTS.map(([w,mm])=>[w,mm]));
+  (m.extra||[]).forEach(x=>{ if(x && x.w) dict.set(x.w, x.m||""); });
+  S.bank.forEach(x=>{ if(!dict.has(x.w)) dict.set(x.w, x.m); });
+  const order = Array.isArray(m.order) && m.order.length ? m.order : S.bank.map(x=>x.w);
+  const seen = new Set(order);
+  S.bank = [...order, ...S.bank.map(x=>x.w).filter(w=>!seen.has(w))].map(w=>({w, m:dict.get(w)||""}));
+  for(const [w,rc] of Object.entries(cards)){
+    const lc = S.cards[w];
+    if(!lc || (rc.u||0) > (lc.u||0)) S.cards[w] = rc;
+  }
+  S.plan = newer(S.plan, m.plan, p=>p.day);
+  S.bonus = newer(S.bonus, m.bonus, hourStamp);
+  S.bankVersion = BANK_VERSION;
+}
+const typing = () => document.activeElement && document.activeElement.id === "sent";
+function watchRemote(){
+  db.doc(userPath("meta")).onSnapshot(async snap=>{
+    if(!snap.exists || snap.metadata.hasPendingWrites) return;
+    const m = snap.data();
+    if(!m || m.dev === DEV) return;
+    try{
+      const r = await pullRemote();
+      if(!r) return;
+      mergeRemote(r); localSave();
+      if(!busy && !advancing && view==="learn" && !typing()) render();
+      setSync("已同步");
+    }catch(e){}
+  }, ()=>setSync("同步已断开，刷新页面可重连"));
+}
+(async()=>{
+  try{
+    db = await window.claude?.use?.("db") ?? null;
+    const user = await window.claude?.use?.("user") ?? null;
+    uid = user ? await user.id() : null;
+  }catch(e){ db = null; }
+  if(!db || !uid){ setSync("进度只存在本机"); return; }
+  setSync("同步中…");
+  try{
+    const r = await pullRemote();
+    if(r){ mergeRemote(r); localSave(); if(!busy && !advancing && view==="learn" && !typing()) render(); }
+    syncReady = true;
+    await (pushing = pushing.then(pushNow));
+    watchRemote();
+  }catch(e){ setSync("同步失败，进度先存在本机"); }
+})();
+
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -173,7 +289,13 @@ function current(){
   return null;
 }
 
-/* ---------------- American pronunciation ---------------- */
+/* ---------------- American pronunciation ----------------
+   Browser speech synthesis is unreliable on phones: iOS mutes it with the silent switch, some
+   in-app browsers ship no voices, and Chrome can drop an utterance spoken right after cancel().
+   Single words therefore play a recorded US pronunciation where the page may load audio
+   (WORD_AUDIO), which also plays with the iPhone silent switch on; speech synthesis is the
+   fallback and reads sentences. */
+const WORD_AUDIO = null; // claude.ai pages cannot load outside audio
 let usVoice = null;
 function pickVoice(){
   try{
@@ -183,13 +305,40 @@ function pickVoice(){
   }catch(e){}
 }
 try{ pickVoice(); speechSynthesis.addEventListener("voiceschanged", pickVoice); }catch(e){}
-function speak(text, rate=0.85){
-  try{
-    speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = "en-US"; if(usVoice) u.voice = usVoice; u.rate = rate;
-    speechSynthesis.speak(u);
-  }catch(e){}
+const MUTE_TIP = /iPhone|iPad|iPod/i.test(navigator.userAgent)
+  ? "没有声音？把 iPhone 侧面的静音键关掉，再调大音量试试。"
+  : "没有声音？先检查音量。有的 App 内置浏览器不支持朗读，可以换 Chrome 或 Safari 打开。";
+function sayNote(msg){ const n = $("#sayState"); if(n) n.textContent = msg; }
+let player = null;
+// quiet: automatic playback when a word appears, which the browser may block; never show tips for it
+function speak(text, rate=0.85, quiet=false){
+  if(!quiet) sayNote("");
+  const word = text.trim();
+  if(WORD_AUDIO && word && !/\s/.test(word)){
+    let fell = false;
+    const fallback = () => { if(!fell){ fell = true; tts(text, rate, quiet); } };
+    try{
+      if(player) player.pause();
+      player = new Audio(WORD_AUDIO(word));
+      player.onerror = fallback;
+      player.play().catch(fallback);
+      return;
+    }catch(e){ fallback(); return; }
+  }
+  tts(text, rate, quiet);
+}
+function tts(text, rate, quiet){
+  const synth = window.speechSynthesis;
+  if(!synth || !window.SpeechSynthesisUtterance){ if(!quiet) sayNote("这个浏览器不支持朗读，换 Chrome 或 Safari 打开试试。"); return; }
+  if(!usVoice) pickVoice();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = "en-US"; if(usVoice) u.voice = usVoice; u.rate = rate;
+  let started = false;
+  u.onstart = () => { started = true; };
+  u.onerror = e => { if(!quiet && e.error!=="interrupted" && e.error!=="canceled") sayNote(MUTE_TIP); };
+  const go = () => { try{ synth.resume(); synth.speak(u); }catch(e){ if(!quiet) sayNote(MUTE_TIP); } };
+  if(synth.speaking || synth.pending){ synth.cancel(); setTimeout(go, 150); } else go();
+  if(!quiet) setTimeout(() => { if(!started) sayNote(MUTE_TIP); }, 2500);
 }
 let interacted = false;
 document.addEventListener("pointerdown", ()=>{ interacted = true; }, {once:true});
@@ -275,6 +424,7 @@ function render(){
       <div class="word">${esc(item.w)}</div>
       <button class="btn speak" data-act="say" aria-label="美式发音">${SPEAKER}美式发音</button>
     </div>
+    <p class="note" id="sayState"></p>
     ${meaningHTML(item, meaning)}
     ${past.length ? `<div><p class="sub">之前拿到 🌸 的句子</p><div class="list">${past.map(f=>`<div><span class="e">🌸</span><p>${esc(f.s)}</p></div>`).join("")}</div></div>` : ""}
     <textarea id="sent" placeholder="用 ${esc(item.w)} 自己造一个句子${past.length ? "，不要和之前的一样" : ""}">${esc(item.draft||"")}</textarea>
@@ -290,7 +440,6 @@ function render(){
     ${tries.length > 1 ? `<div><p class="sub">这次写过的句子</p><div class="list">${tries.slice(1).map(t=>`<div><span class="e">${t.verdict==="good"?"🌸":"💩"}</span><p>${esc(t.sentence)}</p></div>`).join("")}</div></div>` : ""}
   </div>`;
   syncAi();
-  if(interacted && lastSpoken !== item.w){ lastSpoken = item.w; speak(item.w); }
 }
 /* ---------------- voice input ----------------
    Uses the browser's speech recognition (American English) where the page may use the microphone.
@@ -302,7 +451,7 @@ function dictationTip(){
   const how = /iPhone|iPad|Android/i.test(ua) ? "点手机键盘上的麦克风图标"
     : /Mac/i.test(ua) ? "连按两下 Fn 键（或 🌐 键）打开听写"
     : "按 Win + H 打开 Windows 语音输入";
-  return `当前页面没法直接用麦克风。点一下造句框，然后${how}，说英语就会自动打进框里。记得把听写语言设成英语（美国）。`;
+  return `claude.ai 里的页面不能使用麦克风。点一下造句框，然后${how}，说英语就会自动打进框里，记得把听写语言设成英语（美国）。想直接点麦克风说话，可以用网页版 lukawcf.github.io/luka-vocabulary（需要自己的 API Key）。`;
 }
 let rec = null, micBlocked = false;
 function showTip(){ const t = $("#dictTip"); if(t) t.hidden = false; $("#sent")?.focus(); }
@@ -367,7 +516,7 @@ function renderSettings(){
   $("#view").innerHTML = `
   <div class="panel">
     <h2>备份进度</h2>
-    <p class="muted small">学习记录只存在这个浏览器里。换设备或清理浏览器前先导出一份备份，到新设备上再导入。备份和 GitHub Pages 版通用，两边可以互相导入。</p>
+    <p class="muted small">登录同一个 claude.ai 账号，手机和电脑的进度会自动同步。备份用来和 GitHub Pages 版互相转移进度，或者自己留一份存档。</p>
     <div class="row spread">
       <span class="muted small" id="bakState"></span>
       <div class="row">
@@ -491,6 +640,7 @@ function finishItem(cur, sentence){
     card.bonusDay = [dayNum()];
     if(item.poops >= 2){ card.due = Math.min(card.due, dayNum()+1); card.ease = Math.max(1.3, card.ease-0.15); }
   }
+  card.u = Date.now();
   item.done = true;
 }
 function renderWithVerdict(item, t){
