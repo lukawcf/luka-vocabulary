@@ -412,9 +412,9 @@ Decide:
 
 Feedback rules:
 - Every note in Simplified Chinese, short and specific.
-- Say WHERE the problem is and WHAT kind it is. NEVER write the corrected sentence and never give the replacement words. A hint question is fine.
+- Say WHERE the problem is by quoting the learner's own words, and in plain everyday Chinese say what is missing or wrong there (e.g. "'may' 后面少了一个动作", "'information' 前面少了一个词"). Do NOT use grammar terms such as 主语、谓语、宾语、及物、不及物、词性、从句、时态、语法成分. NEVER write the corrected sentence and never give the replacement words. A hint question is fine.
 - For "good": issues is [] and praise is one short encouraging Chinese sentence. For "bad": praise is "".
-- Always fill "usage" (both verdicts), in Simplified Chinese, at most 2 short sentences: what this word is usually used to describe (what kind of thing or situation), what its subject/object usually is, and 2-3 common collocations in English (short phrases like "an issue arises", never a full example sentence and never a fix for the learner's sentence).
+- Always fill "usage" (both verdicts), in plain everyday Simplified Chinese, at most 2 short sentences: what this word is usually used to describe (what kind of thing or situation), plus 2-3 common English collocations (short phrases like "an issue arises", never a full example sentence and never a fix for the learner's sentence). No grammar terms (same list as above).
 
 Reply with only JSON: {"verdict":"good"|"bad","issues":[{"type":"grammar"|"naturalness"|"usage","note":"..."}],"praise":"...","usage":"..."}`;
   const r = await sample.json(prompt, {modelTier:"quick"});
