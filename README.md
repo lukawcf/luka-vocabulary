@@ -1,3 +1,5 @@
+<img src="logo.svg" width="72" alt="Luka Vocabulary logo">
+
 # Luka Vocabulary
 
 用单词自己造句来背雅思核心词汇。AI 判断句子：好句子给 🌸，有问题给 💩，只指出问题不给改好的答案。
