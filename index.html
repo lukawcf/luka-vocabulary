@@ -409,7 +409,7 @@ function render(){
   const tries = item.tries.slice().reverse();
   const latest = tries[0];
   $("#view").innerHTML = `<div class="panel">
-    <div class="row spread"><span class="tag ${item.kind}">${KIND[item.kind]}</span></div>
+    <div class="row spread"><span class="tag ${item.kind}">${KIND[item.kind]}${item.kind==="new" ? (item.round===2 ? " · 第 2 遍" : " · 第 1 遍") : ""}</span></div>
     <div class="row spread" style="align-items:flex-end">
       <div class="word">${esc(item.w)}</div>
       <button class="btn speak" data-act="say" aria-label="美式发音">${SPEAKER}美式发音</button>
@@ -510,7 +510,7 @@ function verdictHTML(t){
       <p><b>${esc(t.sentence)}</b></p>
       ${t.praise ? `<p>${esc(t.praise)}</p>` : ""}
       ${t.issues.length ? `<ul class="notes">${t.issues.map(x=>`<li><b>${esc(TYPE[x.type]||"提示")}</b>：${esc(x.note)}</li>`).join("")}</ul>` : ""}
-      ${good ? `<p class="small muted">马上进入下一个单词…</p>` : `<p class="small muted">自己改完再提交一次。</p>`}
+      ${good ? (t.note ? `<p class="small muted">${esc(t.note)}</p>` : "") : `<p class="small muted">自己改完再提交一次。</p>`}
     </div>
   </div>`;
 }
@@ -660,10 +660,11 @@ async function submit(){
     item.tries.push(t);
     if(r.verdict==="good"){
       item.draft = "";
+      if(cur.list==="plan" && item.kind==="new" && (item.round||1)===1)
+        t.note = "过几个单词后它会再出现一次，到时换一个新句子。";
       finishItem(cur, text);
-      save(); advancing = true;
-      renderWithVerdict(item, t);
-      setTimeout(()=>{ advancing = false; render(); }, 1800);
+      save(); advancing = true; finishedWord = item.w;
+      renderWithVerdict(item, t);   // stays until the learner taps 下一个单词
     }else{
       item.poops++; item.draft = text; save(); render();
     }
@@ -677,7 +678,11 @@ function finishItem(cur, sentence){
   let card = S.cards[item.w];
   if(!card) card = S.cards[item.w] = {w:item.w, reps:0, ease:2.5, interval:0, due:dayNum(), lapses:0, flowers:[]};
   card.flowers.push({s:sentence, d:dayNum()});
-  if(cur.list==="plan") schedule(card, item);
+  if(cur.list==="plan"){
+    if(item.kind==="new" && (item.round||1)===1) queueSecondPass(item);
+    else if(item.kind==="new") schedule(card, {...item, poops:item.poops + (item.prevPoops||0), level:Math.max(item.level||0, item.prevLevel||0)});
+    else schedule(card, item);
+  }
   else{
     // extra practice outside the schedule: keep the interval, but a struggle pulls the word back to tomorrow
     card.bonusDay = [dayNum()];
@@ -685,18 +690,41 @@ function finishItem(cur, sentence){
   }
   item.done = true;
 }
+/* New words are practised twice: after the first flower the word comes back three words later,
+   showing the first sentence and asking for a new one. It is scheduled only after the second
+   pass, with the struggles of both passes counted. */
+function queueSecondPass(item){
+  const items = S.plan.items, at = items.indexOf(item);
+  const second = {w:item.w, kind:"new", round:2, prevPoops:item.poops, prevLevel:item.level||0,
+                  poops:0, level:0, done:false, tries:[]};
+  let pos = items.length, seen = 0;
+  for(let i=at+1;i<items.length;i++){ if(!items[i].done && ++seen===3){ pos = i+1; break; } }
+  items.splice(pos, 0, second);
+}
+// the finished word stays on screen with its flower until the learner taps 下一个单词
+let finishedWord = null;
 function renderWithVerdict(item, t){
-  // keep the finished word on screen with its flower until the auto-advance
   const box = $("#view .panel");
-  const ta = $("#sent"), sb = $("#submit");
-  if(ta) ta.disabled = true; if(sb) sb.disabled = true;
+  const ta = $("#sent"), sb = $("#submit"), mic = $("#micBtn");
+  if(ta) ta.disabled = true; if(sb) sb.disabled = true; if(mic) mic.disabled = true;
   const old = box.querySelector(".verdict"); if(old) old.remove();
   const wrap = document.createElement("div"); wrap.innerHTML = verdictHTML(t);
-  sb.closest(".row").after(wrap.firstElementChild);
+  const v = wrap.firstElementChild;
+  sb.closest(".row").after(v);
+  const next = document.createElement("div");
+  next.className = "row"; next.style.justifyContent = "flex-end";
+  next.innerHTML = `<button class="btn primary" data-act="next" id="nextBtn">下一个单词 →</button>`;
+  v.after(next);
+  $("#nextBtn").focus();
 }
 
 $("#view").addEventListener("click", e=>{
-  const b = e.target.closest("[data-act]"); if(!b || advancing) return;
+  const b = e.target.closest("[data-act]"); if(!b) return;
+  if(advancing){
+    if(b.dataset.act==="next"){ advancing = false; finishedWord = null; render(); }
+    else if(b.dataset.act==="say" && finishedWord) speak(finishedWord);
+    return;
+  }
   const cur = current();
   switch(b.dataset.act){
     case "say": if(cur) speak(cur.item.w); break;
