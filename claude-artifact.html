@@ -59,6 +59,7 @@ textarea{width:100%;font:16px/1.5 var(--body);color:var(--ink);background:var(--
 @media (prefers-reduced-motion:reduce){.big{animation:none}}
 .note{font-size:13px;padding:10px 12px;border-radius:8px;background:var(--sunk);color:var(--muted)}
 #sayState:empty{display:none}
+.usage{font-size:14px;margin-top:6px;padding:8px 10px;border-radius:8px;background:var(--surface);color:var(--ink)}
 .done-mark{font-size:48px}
 @media (max-width:480px){.word{font-size:32px}.panel{padding:18px}}
 </style>
@@ -413,13 +414,15 @@ Feedback rules:
 - Every note in Simplified Chinese, short and specific.
 - Say WHERE the problem is and WHAT kind it is. NEVER write the corrected sentence and never give the replacement words. A hint question is fine.
 - For "good": issues is [] and praise is one short encouraging Chinese sentence. For "bad": praise is "".
+- Always fill "usage" (both verdicts), in Simplified Chinese, at most 2 short sentences: what this word is usually used to describe (what kind of thing or situation), what its subject/object usually is, and 2-3 common collocations in English (short phrases like "an issue arises", never a full example sentence and never a fix for the learner's sentence).
 
-Reply with only JSON: {"verdict":"good"|"bad","issues":[{"type":"grammar"|"naturalness"|"usage","note":"..."}],"praise":"..."}`;
+Reply with only JSON: {"verdict":"good"|"bad","issues":[{"type":"grammar"|"naturalness"|"usage","note":"..."}],"praise":"...","usage":"..."}`;
   const r = await sample.json(prompt, {modelTier:"quick"});
   return {
     verdict: r && r.verdict==="good" ? "good" : "bad",
     issues: Array.isArray(r?.issues) ? r.issues.slice(0,4).map(x=>({type:String(x.type||""), note:String(x.note||"")})) : [],
-    praise: String(r?.praise||"")
+    praise: String(r?.praise||""),
+    usage: String(r?.usage||"")
   };
 }
 
@@ -534,6 +537,7 @@ function verdictHTML(t){
     <div>
       <p><b>${esc(t.sentence)}</b></p>
       ${t.praise ? `<p>${esc(t.praise)}</p>` : ""}
+      ${t.usage ? `<p class="usage"><b>用法</b>：${esc(t.usage)}</p>` : ""}
       ${t.issues.length ? `<ul class="notes">${t.issues.map(x=>`<li><b>${esc(TYPE[x.type]||"提示")}</b>：${esc(x.note)}</li>`).join("")}</ul>` : ""}
       ${good ? (t.note ? `<p class="small muted">${esc(t.note)}</p>` : "") : `<p class="small muted">自己改完再提交一次。</p>`}
     </div>
