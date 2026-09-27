@@ -459,7 +459,6 @@ function render(){
   const tries = item.tries.slice().reverse();
   const latest = tries[0];
   $("#view").innerHTML = `<div class="panel">
-    <div class="row spread"><span class="tag ${item.kind}">${KIND[item.kind]}${item.kind==="new" ? (item.round===2 ? " · 第 2 遍" : " · 第 1 遍") : ""}</span></div>
     <div class="row spread" style="align-items:flex-end">
       <div class="word">${esc(item.w)}</div>
       <button class="btn speak" data-act="say" aria-label="美式发音">${SPEAKER}美式发音</button>
