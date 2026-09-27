@@ -481,58 +481,14 @@ function render(){
     <div class="row spread">
       <span class="muted small" id="aistate"></span>
       <div class="row">
-        <button class="btn speak" id="micBtn" data-act="mic" aria-label="语音输入">${MIC}<span>语音输入</span></button>
         <button class="btn primary" id="submit" data-act="submit">交给 AI 判</button>
       </div>
     </div>
-    <p class="note" id="dictTip" hidden>${dictationTip()}</p>
     ${latest ? verdictHTML(latest) : ""}
     ${tries.length > 1 ? `<div><p class="sub">这次写过的句子</p><div class="list">${tries.slice(1).map(t=>`<div><span class="e">${t.verdict==="good"?"🌸":"💩"}</span><p>${esc(t.sentence)}</p></div>`).join("")}</div></div>` : ""}
   </div>`;
   syncAi();
 }
-/* ---------------- voice input ----------------
-   Uses the browser's speech recognition (American English) where the page may use the microphone.
-   Inside claude.ai the page is sandboxed and the microphone is blocked, so we fall back to the
-   operating system's dictation, which types into the text box like a keyboard. */
-const MIC = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>`;
-function dictationTip(){
-  const ua = navigator.userAgent;
-  const how = /iPhone|iPad|Android/i.test(ua) ? "点手机键盘上的麦克风图标"
-    : /Mac/i.test(ua) ? "连按两下 Fn 键（或 🌐 键）打开听写"
-    : "按 Win + H 打开 Windows 语音输入";
-  return `claude.ai 里的页面不能使用麦克风。点一下造句框，然后${how}，说英语就会自动打进框里，记得把听写语言设成英语（美国）。想直接点麦克风说话，可以用网页版 lukawcf.github.io/luka-vocabulary（需要自己的 API Key）。`;
-}
-let rec = null, micBlocked = false;
-function showTip(){ const t = $("#dictTip"); if(t) t.hidden = false; $("#sent")?.focus(); }
-function setMicUi(on){
-  const b = $("#micBtn"); if(!b) return;
-  b.classList.toggle("primary", on);
-  b.querySelector("span").textContent = on ? "停止" : "语音输入";
-}
-function toggleMic(){
-  if(rec){ rec.stop(); return; }
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if(!SR || micBlocked){ showTip(); return; }
-  const box = $("#sent"); if(!box) return;
-  const base = box.value ? box.value.replace(/\s*$/," ") : "";
-  let r;
-  try{ r = new SR(); }catch(e){ micBlocked = true; showTip(); return; }
-  r.lang = "en-US"; r.interimResults = true; r.continuous = true;
-  r.onresult = ev=>{
-    let text = "";
-    for(const res of ev.results) text += res[0].transcript;
-    const b = $("#sent"); if(!b) return;
-    b.value = base + text.trim();
-    const cur = current(); if(cur){ cur.item.draft = b.value; save(); }
-  };
-  r.onerror = ev=>{
-    if(["not-allowed","service-not-allowed","audio-capture"].includes(ev.error)){ micBlocked = true; showTip(); }
-  };
-  r.onend = ()=>{ rec = null; setMicUi(false); };
-  try{ r.start(); rec = r; setMicUi(true); }catch(e){ micBlocked = true; showTip(); }
-}
-
 /* Meaning stays hidden until the learner taps 看中文. What is on screen is not saved
    (a refresh hides it again); that they looked is saved in item.level for scheduling. */
 let revealed = null;
@@ -659,7 +615,6 @@ async function submit(){
   const card = S.cards[item.w];
   const norm = s => s.toLowerCase().replace(/[^a-z0-9' ]/g,"").trim();
   if((card?.flowers||[]).some(f=>norm(f.s)===norm(text))){ st.textContent = "这句之前写过了，换一个新句子"; return; }
-  if(rec) rec.stop();
   busy = true; syncAi(); st.textContent = "AI 正在看你的句子…";
   try{
     const r = await judge(item.w, meaningOf(item.w), text);
@@ -714,8 +669,8 @@ function queueSecondPass(item){
 let finishedWord = null;
 function renderWithVerdict(item, t){
   const box = $("#view .panel");
-  const ta = $("#sent"), sb = $("#submit"), mic = $("#micBtn");
-  if(ta) ta.disabled = true; if(sb) sb.disabled = true; if(mic) mic.disabled = true;
+  const ta = $("#sent"), sb = $("#submit");
+  if(ta) ta.disabled = true; if(sb) sb.disabled = true;
   const old = box.querySelector(".verdict"); if(old) old.remove();
   const wrap = document.createElement("div"); wrap.innerHTML = verdictHTML(t);
   const v = wrap.firstElementChild;
@@ -739,7 +694,6 @@ $("#view").addEventListener("click", e=>{
     case "say": if(cur) speak(cur.item.w); break;
     case "show": if(cur){ cur.item.level = 2; revealed = cur.item.w; save(); render(); $("#sent")?.focus(); } break;
     case "submit": submit(); break;
-    case "mic": toggleMic(); break;
     case "back": view = "learn"; render(); break;
     case "export": offerFile(`Luka-Vocabulary-备份-${stamp()}.json`, backupText(), "#bakOut", "#bakState"); break;
     case "importok": if(pendingImport){ S = pendingImport; pendingImport = null; save(); view = "learn"; render(); } break;
