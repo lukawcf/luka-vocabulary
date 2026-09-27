@@ -83,12 +83,14 @@ textarea{width:100%;font:16px/1.5 var(--body);color:var(--ink);background:var(--
         <p class="muted small" id="mode"></p>
       </div>
     </div>
-    <button class="btn ghost" id="setBtn">设置</button>
+    <div class="row" style="flex-wrap:nowrap"><span class="muted small" id="sync"></span><button class="btn ghost" id="setBtn">设置</button></div>
   </header>
   <main id="view"></main>
   <p class="muted small">词库：雅思核心 3000 词，取自开源词典 <a href="https://github.com/skywind3000/ECDICT" style="color:var(--accent)">ECDICT</a>（Copyright (c) skywind3000，MIT License）</p>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js"></script>
+<script src="config.js"></script>
 <script>
 /* ---------------- built-in word bank ----------------
    IELTS core 3000: words tagged "ielts" in ECDICT (https://github.com/skywind3000/ECDICT,
@@ -123,7 +125,6 @@ try{
     }
   }
 }catch(e){ S = freshState(); }
-function save(){ try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} }
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -297,7 +298,7 @@ const PRESETS = [
 let AI = null;
 try{ AI = JSON.parse(localStorage.getItem(AI_KEY)||"null"); }catch(e){}
 function saveAI(){ try{ localStorage.setItem(AI_KEY, JSON.stringify(AI)); }catch(e){} }
-const aiReady = () => !!(AI && AI.base && AI.model && (AI.key || AI.noKey));
+const ownKeyReady = () => !!(AI && AI.base && AI.model && (AI.key || AI.noKey));
 
 async function chat(prompt, cfg=AI){
   const base = cfg.base.trim().replace(/\/+$/,"");
@@ -340,11 +341,21 @@ function parseJSON(text){
 let busy = false;
 function syncAi(){
   const s = $("#aistate"), b = $("#submit");
-  if(s && !busy && !aiReady()) s.textContent = "先在「设置」里配置 AI";
+  if(s && !busy){
+    if(!aiReady()) s.textContent = cloudOn ? "正在连接…" : "先在「设置」里配置 AI";
+    else if(s.textContent === "正在连接…") s.textContent = "";
+    if(aiReady() && !ownKeyReady() && lastRemaining !== null && lastRemaining <= 10 && !s.textContent)
+      s.textContent = `今天还能免费判断 ${lastRemaining} 次`;
+  }
   if(b) b.disabled = busy || !aiReady();
 }
 function errCopy(e){
   const c = e && e.code;
+  if(c==="daily_limit") return "今天的免费判断次数用完了，明天再来。也可以在「设置」里填自己的 API Key。";
+  if(c==="budget") return "这个月的免费额度已经用完了，下个月恢复。也可以在「设置」里填自己的 API Key。";
+  if(c==="too_long") return "句子太长了，控制在 200 个字符以内";
+  if(c==="unauthorized") return "连接过期了，刷新页面再试";
+  if(c==="upstream" || c==="invalid_json" || c==="server") return "AI 暂时没响应，过几秒再提交一次";
   if(c==="network") return "连不上 AI 接口。检查网络和接口地址；有的服务商不允许网页直接调用，可以换一家或用 OpenRouter。";
   if(c==="auth") return "API Key 无效或没有权限，去「设置」里检查一下";
   if(c==="rate") return "请求太频繁或额度用完了，稍后再试";
@@ -354,6 +365,7 @@ function errCopy(e){
 }
 
 async function judge(word, meaning, sentence){
+  if(!ownKeyReady() && cloudOn) return cloudJudge(word, meaning, sentence);
   const prompt = `You are grading one sentence written by a Chinese learner of spoken English. The learner was asked to make up their own sentence using a target word.
 
 Target word: "${word}" (meaning: ${meaning})
@@ -377,6 +389,199 @@ Reply with only JSON: {"verdict":"good"|"bad","issues":[{"type":"grammar"|"natur
     praise: String(r?.praise||""),
     usage: String(r?.usage||"")
   };
+}
+
+/* ---------------- cloud mode: no sign-up, free AI judging, sync ----------------
+   With cloud.js filled in, every visitor is signed in anonymously in the background (Supabase
+   anonymous sign-ins), so there is no login screen but each visitor still has their own user id.
+   Progress is stored in user_state + user_cards (row level security: own rows only) and sentences
+   are judged by the judge function with a free daily quota. Binding an email is optional and only
+   needed to continue on another device. A learner's own API key, if set, takes precedence and has
+   no quota. Without cloud.js values the app stays local-only. */
+const CFG = window.LUKA_CONFIG || {};
+const cloudOn = !!(CFG.supabaseUrl && CFG.supabaseAnonKey && window.supabase);
+const sb = cloudOn ? window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseAnonKey) : null;
+let session = null, lastRemaining = null;
+function aiReady(){ return ownKeyReady() || (cloudOn && !!session); }
+function setSync(msg){ const s = $("#sync"); if(s) s.textContent = msg; }
+function localSave(){ try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} }
+const typing = () => document.activeElement && document.activeElement.id === "sent";
+const canRerender = () => !busy && !advancing && view==="learn" && !typing();
+
+// Cloudflare Turnstile token for sign-ins, when CAPTCHA protection is configured
+function captchaToken(){
+  if(!CFG.turnstileSiteKey) return Promise.resolve(undefined);
+  return new Promise(res=>{
+    const go = () => {
+      const box = document.createElement("div");
+      box.style.cssText = "position:fixed;right:12px;bottom:12px;z-index:10";
+      document.body.append(box);
+      window.turnstile.render(box, {
+        sitekey: CFG.turnstileSiteKey,
+        callback: t => { res(t); setTimeout(()=>box.remove(), 800); },
+        "error-callback": () => { res(undefined); box.remove(); },
+      });
+    };
+    if(window.turnstile) return go();
+    const s = document.createElement("script");
+    s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+    s.onload = go; s.onerror = () => res(undefined);
+    document.head.append(s);
+  });
+}
+
+async function cloudJudge(word, meaning, sentence){
+  const { data, error } = await sb.functions.invoke("judge", { body:{ word, meaning, sentence } });
+  if(error){
+    let code = "upstream";
+    try{ const b = await error.context?.json(); code = b?.code || code; }catch(e){}
+    throw {code};
+  }
+  lastRemaining = typeof data.remaining === "number" ? data.remaining : null;
+  return {verdict:data.verdict, issues:data.issues||[], praise:data.praise||"", usage:data.usage||""};
+}
+
+// ---- sync: pull + merge on start and when the page comes back into view, push after changes
+const IELTS_SET = new Set(IELTS.map(x=>x[0]));
+let syncReady = false, pushTimer = null, pushing = Promise.resolve(), lastPushedCards = {}, lastPushedMeta = "";
+async function pullCloud(){
+  const uid = session.user.id;
+  const st = await sb.from("user_state").select("word_order,extra_words,plan,bonus").eq("user_id", uid).maybeSingle();
+  if(st.error) throw st.error;
+  const cards = [];
+  for(let from=0;;from+=1000){
+    const r = await sb.from("user_cards").select("word,card").eq("user_id", uid).range(from, from+999);
+    if(r.error) throw r.error;
+    cards.push(...r.data);
+    if(r.data.length < 1000) break;
+  }
+  return {st:st.data, cards};
+}
+function newer(a, b, stamp){
+  if(!b) return a; if(!a) return b;
+  const sa = stamp(a), sb2 = stamp(b);
+  if(sa !== sb2) return sa > sb2 ? a : b;
+  const done = p => (p.items||[]).filter(i=>i.done).length;
+  return done(b) > done(a) ? b : a;
+}
+const hourStamp = p => { const [d,h] = String(p.key).split("-").map(Number); return d*24 + h; };
+function mergeCloud({st, cards}){
+  for(const {word, card} of cards){
+    lastPushedCards[word] = JSON.stringify(card);
+    const lc = S.cards[word];
+    if(!lc || (card.u||0) > (lc.u||0)) S.cards[word] = card;
+  }
+  if(st){
+    const dict = new Map(IELTS.map(([w,m])=>[w,m]));
+    (st.extra_words||[]).forEach(x=>{ if(x && x.w) dict.set(x.w, x.m||""); });
+    S.bank.forEach(x=>{ if(!dict.has(x.w)) dict.set(x.w, x.m); });
+    const order = st.word_order && st.word_order.length ? st.word_order : S.bank.map(x=>x.w);
+    const seen = new Set(order);
+    S.bank = [...order, ...S.bank.map(x=>x.w).filter(w=>!seen.has(w))].map(w=>({w, m:dict.get(w)||""}));
+    S.plan = newer(S.plan, st.plan, p=>p.day);
+    S.bonus = newer(S.bonus, st.bonus, hourStamp);
+  }
+}
+async function pushCloud(){
+  if(!session) return;
+  const uid = session.user.id;
+  const rows = [];
+  for(const [w,c] of Object.entries(S.cards)){
+    const j = JSON.stringify(c);
+    if(lastPushedCards[w] !== j) rows.push({user_id:uid, word:w, card:c, updated_at:new Date(c.u || Date.now()).toISOString()});
+  }
+  for(let i=0;i<rows.length;i+=500){
+    const r = await sb.from("user_cards").upsert(rows.slice(i, i+500));
+    if(r.error) throw r.error;
+  }
+  rows.forEach(r=>{ lastPushedCards[r.word] = JSON.stringify(r.card); });
+  const meta = {word_order:S.bank.map(x=>x.w), extra_words:S.bank.filter(x=>!IELTS_SET.has(x.w)), plan:S.plan||null, bonus:S.bonus||null};
+  const mj = JSON.stringify(meta);
+  if(mj !== lastPushedMeta){
+    const r = await sb.from("user_state").upsert({user_id:uid, ...meta, updated_at:new Date().toISOString()});
+    if(r.error) throw r.error;
+    lastPushedMeta = mj;
+  }
+  setSync(session.user.is_anonymous ? "已保存到云端" : "已同步");
+}
+function schedulePush(){
+  if(!syncReady) return;
+  clearTimeout(pushTimer);
+  setSync("保存中…");
+  pushTimer = setTimeout(()=>{ pushing = pushing.then(pushCloud).catch(()=>setSync("保存失败，进度先存在本机")); }, 1200);
+}
+function save(){ localSave(); schedulePush(); }
+async function startSync(){
+  syncReady = false; lastPushedCards = {}; lastPushedMeta = "";
+  setSync("连接中…");
+  try{
+    mergeCloud(await pullCloud()); localSave();
+    syncReady = true;
+    await (pushing = pushing.then(pushCloud));
+    if(canRerender()) render();
+  }catch(e){ setSync("连接失败，进度先存在本机"); }
+}
+document.addEventListener("visibilitychange", ()=>{
+  if(document.visibilityState!=="visible" || !syncReady || !session) return;
+  pullCloud().then(r=>{ mergeCloud(r); localSave(); if(canRerender()) render(); }).catch(()=>{});
+});
+
+async function signInAnon(){
+  const { error } = await sb.auth.signInAnonymously({ options:{ captchaToken: await captchaToken() } });
+  if(error) setSync("连接失败，进度只存在本机");
+}
+async function initCloud(){
+  if(!sb) return;
+  setSync("连接中…");
+  sb.auth.onAuthStateChange((ev, s)=>{
+    const prev = session?.user?.id;
+    session = s;
+    // run Supabase calls outside the auth callback
+    if(s && s.user.id !== prev) setTimeout(startSync, 0);
+    setTimeout(()=>{ syncAi(); if(view==="settings") renderSettings(); }, 0);
+  });
+  const { data } = await sb.auth.getSession();
+  if(!data.session) await signInAnon();
+}
+
+// ---- optional email: bind it to keep this progress, or sign in with it on another device
+async function bindEmail(){
+  const email = $("#bindEmail").value.trim(), st = $("#acctState");
+  if(!/^\S+@\S+\.\S+$/.test(email)){ st.textContent = "邮箱格式不对"; return; }
+  st.textContent = "正在发送…";
+  const { error } = await sb.auth.updateUser({ email }, { emailRedirectTo: location.origin + location.pathname });
+  st.textContent = error ? "发送失败：" + error.message : "验证邮件已发出，点邮件里的链接就绑定好了。";
+}
+async function emailSignIn(){
+  const email = $("#loginEmail").value.trim(), st = $("#acctState");
+  if(!/^\S+@\S+\.\S+$/.test(email)){ st.textContent = "邮箱格式不对"; return; }
+  st.textContent = "正在发送…";
+  const { error } = await sb.auth.signInWithOtp({ email, options:{ shouldCreateUser:false, emailRedirectTo: location.origin + location.pathname, captchaToken: await captchaToken() } });
+  st.textContent = error ? "发送失败：" + error.message : "登录链接已发到邮箱，在这台设备上打开它就能接着学。";
+}
+async function signOutCloud(){
+  await sb.auth.signOut();
+  S = freshState(); localSave(); lastRemaining = null;
+  await signInAnon();
+  view = "learn"; render();
+}
+function accountHTML(){
+  if(!cloudOn) return "";
+  if(!session) return `<div class="panel"><h2>云端进度</h2><p class="muted small">正在连接…</p></div>`;
+  const u = session.user;
+  if(!u.is_anonymous) return `<div class="panel">
+    <h2>云端进度</h2>
+    <p class="muted small">已绑定邮箱 ${esc(u.email||"")}，在其他设备用这个邮箱登录就能接着学。</p>
+    <div class="row spread"><span class="muted small" id="acctState"></span><button class="btn" data-act="signout">退出登录</button></div>
+  </div>`;
+  return `<div class="panel">
+    <h2>云端进度</h2>
+    <p class="muted small">不用注册，进度已经自动保存在云端，和这台设备绑定。想在手机和电脑之间同步，可以绑定一个邮箱（可选）。</p>
+    <label class="field">绑定邮箱<input id="bindEmail" type="email" autocomplete="email" placeholder="you@example.com"></label>
+    <div class="row" style="justify-content:flex-end"><button class="btn primary" data-act="bindemail">发送验证邮件</button></div>
+    <label class="field">已经在别的设备绑定过？用邮箱登录<input id="loginEmail" type="email" autocomplete="email" placeholder="you@example.com"></label>
+    <div class="row spread"><span class="muted small" id="acctState"></span><button class="btn" data-act="emaillogin">发送登录链接</button></div>
+  </div>`;
 }
 
 /* ---------------- render ---------------- */
@@ -519,16 +724,18 @@ function verdictHTML(t){
 }
 
 /* ---------------- settings: AI, backup, Skill export ---------------- */
-let view = aiReady() ? "learn" : "settings";
+let view = (cloudOn || aiReady()) ? "learn" : "settings";
 function renderSettings(){
-  const first = !aiReady();
+  const first = !cloudOn && !aiReady();
   const cfg = AI || {preset:"anthropic", ...PRESETS[0], key:""};
   const p = PRESETS.find(x=>x.id===cfg.preset) || PRESETS[PRESETS.length-1];
   $("#mode").textContent = "设置";
   $("#view").innerHTML = `
+  ${accountHTML()}
   ${first ? `<div class="panel"><h2>先配置一个 AI</h2><p class="muted">造句要靠 AI 判 🌸 还是 💩。用你自己的 API Key，任何一家都行，判一句话的费用通常不到一分钱。</p></div>` : ""}
   <div class="panel">
-    <h2>AI 设置</h2>
+    <h2>${cloudOn ? "使用自己的 API Key（可选）" : "AI 设置"}</h2>
+    ${cloudOn ? `<p class="muted small">不填也能用，每天有免费的判断次数。填了自己的 Key 就不受次数限制，费用算在你自己的账户上。</p>` : ""}
     <label class="field">服务商
       <select id="aiPreset">${PRESETS.map(x=>`<option value="${x.id}" ${x.id===p.id?"selected":""}>${esc(x.name)}</option>`).join("")}</select>
     </label>
@@ -541,6 +748,7 @@ function renderSettings(){
     <div class="row spread">
       <span class="muted small" id="aiTest"></span>
       <div class="row">
+        ${cloudOn && AI ? `<button class="btn" data-act="aiclear">不用自己的 Key</button>` : ""}
         <button class="btn" data-act="aitest">测试连接</button>
         <button class="btn primary" data-act="aisave">保存</button>
       </div>
@@ -549,7 +757,7 @@ function renderSettings(){
   ${first ? "" : `
   <div class="panel">
     <h2>备份进度</h2>
-    <p class="muted small">学习记录只存在这个浏览器里。换设备或清理浏览器前，先导出一份备份，到新设备上再导入。备份里不包含 API Key。</p>
+    <p class="muted small">${cloudOn ? "进度已经保存在云端。备份用来自己留一份存档，或者和 claude.ai 版互相转移进度。" : "学习记录只存在这个浏览器里。换设备或清理浏览器前，先导出一份备份，到新设备上再导入。"}备份里不包含 API Key。</p>
     <div class="row spread">
       <span class="muted small" id="bakState"></span>
       <div class="row">
@@ -691,6 +899,7 @@ function finishItem(cur, sentence){
     card.bonusDay = [dayNum()];
     if(item.poops >= 2){ card.due = Math.min(card.due, dayNum()+1); card.ease = Math.max(1.3, card.ease-0.15); }
   }
+  card.u = Date.now();
   item.done = true;
 }
 /* New words are practised twice: after the first flower the word comes back three words later,
@@ -736,6 +945,10 @@ $("#view").addEventListener("click", e=>{
     case "mic": toggleMic(); break;
     case "aitest": testAI(); break;
     case "aisave": saveSettings(); break;
+    case "aiclear": AI = null; saveAI(); renderSettings(); break;
+    case "bindemail": bindEmail(); break;
+    case "emaillogin": emailSignIn(); break;
+    case "signout": signOutCloud(); break;
     case "back": view = "learn"; render(); break;
     case "export": exportBackup(); break;
     case "importok": if(pendingImport){ S = pendingImport; pendingImport = null; save(); view = "learn"; render(); } break;
@@ -770,6 +983,7 @@ setInterval(()=>{
 }, 30000);
 
 render();
+initCloud();
 </script>
 
 </body>
