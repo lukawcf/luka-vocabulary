@@ -38,6 +38,10 @@ GitHub Pages：把仓库推送到 GitHub，然后在 Settings → Pages 里选�
 - 判句子时，浏览器直接把请求发给用户选择的 AI 服务商，不经过任何中间服务器
 - 备份文件不包含 API Key
 
+## 发音
+
+每个单词都有预先生成的美式发音录音，放在 `audio/a00.json` … `audio/a1f.json`（按单词哈希分成 32 组，每组 `{单词: base64 mp3}`）。录音用开源语音模型 [Kokoro](https://github.com/hexgrad/kokoro)（Apache-2.0，通过 [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx)）的美式男声 `am_michael` 生成，生成脚本是 `tools/gen_audio.py`。没有录音的单词才会用浏览器自带的朗读。
+
 ## 词库来源
 
 雅思词表取自开源英汉词典 [ECDICT](https://github.com/skywind3000/ECDICT)（Copyright (c) skywind3000，MIT License）：选取标记为雅思（ielts）的单词，去掉中考级别的基础词，按 COCA / BNC 语料库词频取最常用的 3000 个，释义精简为最多两个词性。

@@ -185,12 +185,38 @@ function current(){
 }
 
 /* ---------------- American pronunciation ----------------
-   Browser speech synthesis is unreliable on phones: iOS mutes it with the silent switch, some
-   in-app browsers ship no voices, and Chrome can drop an utterance spoken right after cancel().
-   Single words therefore play a recorded US pronunciation where the page may load audio
-   (WORD_AUDIO), which also plays with the iPhone silent switch on; speech synthesis is the
-   fallback and reads sentences. */
-const WORD_AUDIO = w => `https://dict.youdao.com/dictvoice?type=2&audio=${encodeURIComponent(w)}`;
+   Every built-in word has a recorded US pronunciation (Kokoro TTS, voice am_michael, Apache-2.0
+   model) published next to the page as audio/a00.json .. audio/a1f.json, {word: base64 mp3}.
+   A word's pack is fetched when the word appears, so tapping 美式发音 plays at once; an <audio>
+   element works on Android Chrome and with the iPhone silent switch on, where browser speech
+   synthesis often stays silent. Speech synthesis remains the fallback for words without a
+   recording (words from older word lists). */
+const AUDIO_BUCKETS = 32;
+function audioBucket(w){
+  let h = 0;
+  for(const ch of w.toLowerCase()) h = (h*31 + ch.charCodeAt(0)) >>> 0;
+  return (h % AUDIO_BUCKETS).toString(16).padStart(2, "0");
+}
+const audioPacks = {}, audioLoaded = {};
+function loadPack(k){
+  if(!audioPacks[k]){
+    audioPacks[k] = fetch(`audio/a${k}.json`)
+      .then(r=>{ if(!r.ok) throw new Error("pack " + r.status); return r.json(); })
+      .then(p=>{ audioLoaded[k] = p; return p; })
+      .catch(e=>{ delete audioPacks[k]; throw e; });
+  }
+  return audioPacks[k];
+}
+function prefetchAudio(w){ if(w && !/\s/.test(w)) loadPack(audioBucket(w)).catch(()=>{}); }
+const audioUrls = new Map();
+function audioUrl(w, b64){
+  if(!audioUrls.has(w)){
+    const bin = atob(b64), bytes = new Uint8Array(bin.length);
+    for(let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
+    audioUrls.set(w, URL.createObjectURL(new Blob([bytes], {type:"audio/mpeg"})));
+  }
+  return audioUrls.get(w);
+}
 let usVoice = null;
 function pickVoice(){
   try{
@@ -202,23 +228,33 @@ function pickVoice(){
 try{ pickVoice(); speechSynthesis.addEventListener("voiceschanged", pickVoice); }catch(e){}
 const MUTE_TIP = /iPhone|iPad|iPod/i.test(navigator.userAgent)
   ? "没有声音？把 iPhone 侧面的静音键关掉，再调大音量试试。"
-  : "没有声音？先检查音量。有的 App 内置浏览器不支持朗读，可以换 Chrome 或 Safari 打开。";
+  : "没有声音？先检查手机的媒体音量，再刷新页面试试。";
 function sayNote(msg){ const n = $("#sayState"); if(n) n.textContent = msg; }
-let player = null;
-// quiet: automatic playback when a word appears, which the browser may block; never show tips for it
+const player = new Audio();
+function playRecorded(word, b64, rate, quiet){
+  try{
+    player.pause();
+    player.src = audioUrl(word, b64);
+    player.playbackRate = 1;
+    player.play().catch(()=>tts(word, rate, quiet));
+  }catch(e){ tts(word, rate, quiet); }
+}
+// quiet: never show tips (automatic playback the browser may block)
 function speak(text, rate=0.85, quiet=false){
   if(!quiet) sayNote("");
   const word = text.trim();
-  if(WORD_AUDIO && word && !/\s/.test(word)){
-    let fell = false;
-    const fallback = () => { if(!fell){ fell = true; tts(text, rate, quiet); } };
-    try{
-      if(player) player.pause();
-      player = new Audio(WORD_AUDIO(word));
-      player.onerror = fallback;
-      player.play().catch(fallback);
-      return;
-    }catch(e){ fallback(); return; }
+  if(word && !/\s/.test(word)){
+    const k = audioBucket(word), pack = audioLoaded[k];
+    if(pack){                       // cached: play inside the tap, which every browser allows
+      if(pack[word]) return playRecorded(word, pack[word], rate, quiet);
+      return tts(text, rate, quiet);
+    }
+    if(!quiet) sayNote("正在加载发音…");
+    loadPack(k).then(p=>{
+      if(!quiet) sayNote("");
+      if(p[word]) playRecorded(word, p[word], rate, quiet); else tts(text, rate, quiet);
+    }).catch(()=>{ if(!quiet) sayNote(""); tts(text, rate, quiet); });
+    return;
   }
   tts(text, rate, quiet);
 }
@@ -368,6 +404,7 @@ function render(){
   const {item} = cur;
   const card = S.cards[item.w];
   const meaning = meaningOf(item.w);
+  prefetchAudio(item.w);
   const past = (card?.flowers||[]).filter(f=>!item.tries.some(t=>t.sentence===f.s && t.verdict==="good"));
   const tries = item.tries.slice().reverse();
   const latest = tries[0];
