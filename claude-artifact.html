@@ -398,7 +398,11 @@ function errCopy(e){
   if(["not_granted","sampling_disabled","not_declared","capability_disabled"].includes(c)){ sample = null; return "没有获得使用 AI 的许可"; }
   if(c==="rate_limited") return "请求太频繁，稍后再试";
   if(c==="session_expired") return "需要重新登录 claude.ai";
-  return "AI 暂时没响应，再提交一次试试";
+  if(c==="invalid_json") return "AI 的回复格式不对，程序没读懂，再提交一次试试（invalid_json）";
+  if(c==="refused") return "AI 拒绝判断这句话，换个说法再试试（refused）";
+  if(c==="empty_completion") return "AI 没有给出回复，再提交一次试试（empty_completion）";
+  if(c==="prompt_too_large") return "内容太长了，AI 处理不了（prompt_too_large）";
+  return "Claude 服务暂时不稳定，过几秒再提交一次（" + (c || "unknown") + "）";
 }
 async function judge(word, meaning, sentence){
   const prompt = `You are grading one sentence written by a Chinese learner of spoken English. The learner was asked to make up their own sentence using a target word.
@@ -417,7 +421,14 @@ Feedback rules:
 - Always fill "usage" (both verdicts), in plain everyday Simplified Chinese, at most 2 short sentences: what this word is usually used to describe (what kind of thing or situation), plus 2-3 common English collocations (short phrases like "an issue arises", never a full example sentence and never a fix for the learner's sentence). No grammar terms (same list as above).
 
 Reply with only JSON: {"verdict":"good"|"bad","issues":[{"type":"grammar"|"naturalness"|"usage","note":"..."}],"praise":"...","usage":"..."}`;
-  const r = await sample.json(prompt, {modelTier:"quick"});
+  // one automatic retry for transient failures (service hiccup, unreadable reply); never a loop
+  let r;
+  try{ r = await sample.json(prompt, {modelTier:"quick"}); }
+  catch(e){
+    if(!["upstream_error","invalid_json","empty_completion"].includes(e?.code)) throw e;
+    await new Promise(res=>setTimeout(res, 1500));
+    r = await sample.json(prompt, {modelTier:"quick"});
+  }
   return {
     verdict: r && r.verdict==="good" ? "good" : "bad",
     issues: Array.isArray(r?.issues) ? r.issues.slice(0,4).map(x=>({type:String(x.type||""), note:String(x.note||"")})) : [],
