@@ -39,3 +39,7 @@ GitHub Pages：把仓库推送到 GitHub，然后在 Settings → Pages 里选�
 ## 词库来源
 
 雅思词表取自开源英汉词典 [ECDICT](https://github.com/skywind3000/ECDICT)（Copyright (c) skywind3000，MIT License）：选取标记为雅思（ielts）的单词，去掉中考级别的基础词，按 COCA / BNC 语料库词频取最常用的 3000 个，释义精简为最多两个词性。
+
+## claude.ai 版
+
+`claude-artifact.html` 是发布在 claude.ai 上的版本的源码。它用打开者自己的 Claude 套餐额度判句子，不需要 API Key，只能在 claude.ai 里运行（直接用浏览器打开时 AI 不可用）。两个版本的备份文件通用。
