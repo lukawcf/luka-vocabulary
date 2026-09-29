@@ -1,18 +1,24 @@
-// Luka Vocabulary — judge one learner sentence with DeepSeek.
+// Luka Vocabulary — judge one learner sentence with Qwen (any OpenAI-compatible model works).
 //
 // The prompt lives here, not in the browser, so the endpoint can only ever grade a sentence for
-// a word; the DeepSeek key never leaves the server. Before calling the model it enforces:
+// a word; the model API key never leaves the server. Before calling the model it enforces:
 //   - a user id (Supabase JWT; anonymous sign-ins count, so visitors need no account)
 //   - input sizes (word, meaning, sentence)
 //   - DAILY_LIMIT judgements per user and IP_DAILY_LIMIT per IP per UTC day
-//   - MONTHLY_BUDGET_USD across all users per UTC month (then AI judging pauses for everyone)
-// Every call is recorded in ai_usage with its token cost.
+//   - MONTHLY_BUDGET_CNY across all users per UTC month (then AI judging pauses for everyone)
+// A reply that is cut off, not JSON, or missing the verdict is asked for once more; transient
+// upstream failures (network, 429, 5xx) are retried once too. Every model call is recorded in
+// ai_usage with its cost; only a judgement that reached the learner counts toward their quota.
 //
-// Secrets (supabase secrets set ...): DEEPSEEK_API_KEY
-// Optional: DEEPSEEK_MODEL (deepseek-chat), DAILY_LIMIT (60), IP_DAILY_LIMIT (180), MONTHLY_BUDGET_USD (20),
-//           IP_SALT (any random string, keeps stored IP hashes unguessable),
-//           PRICE_IN_PER_M / PRICE_OUT_PER_M (USD per million tokens; check DeepSeek's pricing page)
+// Secrets (supabase secrets set ...):
+//   AI_API_KEY    DashScope (Alibaba Cloud Model Studio) API key
+//   AI_BASE_URL   https://dashscope.aliyuncs.com/compatible-mode/v1        (China site)
+//                 https://dashscope-intl.aliyuncs.com/compatible-mode/v1   (international site)
+//   IP_SALT       any random string, keeps stored IP hashes unguessable
+// Optional: AI_MODEL (qwen-plus), DAILY_LIMIT (60), IP_DAILY_LIMIT (180), MONTHLY_BUDGET_CNY (150),
+//           PRICE_IN_PER_M_CNY / PRICE_OUT_PER_M_CNY (yuan per million tokens; check the console's price list)
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { parseReply, type Judgement } from "./parse.ts";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -25,10 +31,12 @@ const json = (body: unknown, status = 200) =>
 const env = (k: string, d = "") => Deno.env.get(k) ?? d;
 const DAILY_LIMIT = Number(env("DAILY_LIMIT", "60"));
 const IP_DAILY_LIMIT = Number(env("IP_DAILY_LIMIT", "180"));
-const MONTHLY_BUDGET_USD = Number(env("MONTHLY_BUDGET_USD", "20"));
-const PRICE_IN = Number(env("PRICE_IN_PER_M", "0.27"));
-const PRICE_OUT = Number(env("PRICE_OUT_PER_M", "1.10"));
-const MODEL = env("DEEPSEEK_MODEL", "deepseek-chat");
+const MONTHLY_BUDGET_CNY = Number(env("MONTHLY_BUDGET_CNY", "150"));
+const PRICE_IN = Number(env("PRICE_IN_PER_M_CNY", "0.8"));
+const PRICE_OUT = Number(env("PRICE_OUT_PER_M_CNY", "2"));
+const BASE_URL = env("AI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/+$/, "");
+const MODEL = env("AI_MODEL", "qwen-plus");
+const PROMPT_VERSION = "judge-v3";
 
 const admin = createClient(env("SUPABASE_URL"), env("SUPABASE_SERVICE_ROLE_KEY"));
 
@@ -37,6 +45,40 @@ async function ipHash(req: Request) {
   const bytes = new TextEncoder().encode(env("IP_SALT", "luka") + ip);
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+type ModelReply = { content: string; finish: string | null; promptTokens: number; completionTokens: number };
+
+// One chat completion. Throws "transient" for network errors, timeouts, 429 and 5xx (worth one
+// retry) and "upstream" for anything else.
+async function callModel(prompt: string): Promise<ModelReply> {
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${env("AI_API_KEY")}` },
+      body: JSON.stringify({
+        model: MODEL,
+        messages: [{ role: "user", content: prompt }],
+        response_format: { type: "json_object" }, // Qwen: needs "JSON" in the prompt and non-thinking mode
+        ...(BASE_URL.includes("dashscope") ? { enable_thinking: false } : {}),
+        temperature: 0.2,
+        max_tokens: 500,
+      }),
+      signal: AbortSignal.timeout(20000),
+    });
+  } catch {
+    throw new Error("transient");
+  }
+  if (res.status === 429 || res.status >= 500) throw new Error("transient");
+  if (!res.ok) throw new Error("upstream");
+  const out = await res.json();
+  return {
+    content: out?.choices?.[0]?.message?.content ?? "",
+    finish: out?.choices?.[0]?.finish_reason ?? null,
+    promptTokens: out?.usage?.prompt_tokens ?? 0,
+    completionTokens: out?.usage?.completion_tokens ?? 0,
+  };
 }
 
 function buildPrompt(word: string, meaning: string, sentence: string) {
@@ -84,45 +126,35 @@ Deno.serve(async (req) => {
   const status = st as { today_count: number; ip_today: number; month_cost: number };
   if (status.today_count >= DAILY_LIMIT) return json({ code: "daily_limit", limit: DAILY_LIMIT }, 429);
   if (status.ip_today >= IP_DAILY_LIMIT) return json({ code: "daily_limit", limit: DAILY_LIMIT }, 429);
-  if (Number(status.month_cost) >= MONTHLY_BUDGET_USD) return json({ code: "budget" }, 503);
+  if (Number(status.month_cost) >= MONTHLY_BUDGET_CNY) return json({ code: "budget" }, 503);
 
-  // ask DeepSeek
-  let res: Response;
-  try {
-    res = await fetch("https://api.deepseek.com/chat/completions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${env("DEEPSEEK_API_KEY")}` },
-      body: JSON.stringify({
-        model: MODEL,
-        messages: [{ role: "user", content: buildPrompt(word, meaning, sentence) }],
-        response_format: { type: "json_object" },
-        temperature: 0.2,
-        max_tokens: 500,
-      }),
+  // ask the model: at most two calls (one retry for a transient failure or an unusable reply)
+  const prompt = buildPrompt(word, meaning, sentence);
+  let result: Judgement | null = null;
+  let lastError = "invalid_json";
+  for (let attempt = 0; attempt < 2 && !result; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 800 + Math.random() * 700));
+    let reply: ModelReply;
+    try {
+      reply = await callModel(prompt);
+    } catch (e) {
+      lastError = "upstream";
+      if ((e as Error).message !== "transient") break;
+      continue;
+    }
+    result = parseReply(reply.content, reply.finish);
+    if (!result) lastError = "invalid_json";
+    // the call cost money either way; only a judgement the learner receives counts toward quotas
+    await admin.from("ai_usage").insert({
+      user_id: user.id,
+      ip_hash: iph,
+      prompt_tokens: reply.promptTokens,
+      completion_tokens: reply.completionTokens,
+      cost_cny: (reply.promptTokens * PRICE_IN + reply.completionTokens * PRICE_OUT) / 1e6,
+      counted: !!result,
+      prompt_version: PROMPT_VERSION,
     });
-  } catch {
-    return json({ code: "upstream" }, 502);
   }
-  if (!res.ok) return json({ code: "upstream", status: res.status }, 502);
-  const out = await res.json();
-  const usage = out?.usage ?? {};
-  const cost = ((usage.prompt_tokens ?? 0) * PRICE_IN + (usage.completion_tokens ?? 0) * PRICE_OUT) / 1e6;
-  await admin.from("ai_usage").insert({
-    user_id: user.id,
-    prompt_tokens: usage.prompt_tokens ?? 0,
-    completion_tokens: usage.completion_tokens ?? 0,
-    cost_usd: cost,
-    ip_hash: iph,
-  });
-
-  let r: Record<string, unknown>;
-  try { r = JSON.parse(out?.choices?.[0]?.message?.content ?? ""); } catch { return json({ code: "invalid_json" }, 502); }
-  const issues = Array.isArray(r.issues) ? r.issues.slice(0, 4) : [];
-  return json({
-    verdict: r.verdict === "good" ? "good" : "bad",
-    issues: issues.map((x: any) => ({ type: String(x?.type ?? ""), note: String(x?.note ?? "") })),
-    praise: String(r.praise ?? ""),
-    usage: String(r.usage ?? ""),
-    remaining: Math.max(0, DAILY_LIMIT - status.today_count - 1),
-  });
+  if (!result) return json({ code: lastError }, 502);
+  return json({ ...result, remaining: Math.max(0, DAILY_LIMIT - status.today_count - 1) });
 });

@@ -25,14 +25,16 @@ create table public.user_cards (
   primary key (user_id, word)
 );
 
--- One row per AI judgement, for the daily per-user limit and the monthly budget.
+-- One row per model call: daily limits count only rows marked counted, the monthly budget sums all.
 create table public.ai_usage (
   id                bigint generated always as identity primary key,
   user_id           uuid        not null references auth.users (id) on delete cascade,
   created_at        timestamptz not null default now(),
   prompt_tokens     int         not null default 0,
   completion_tokens int         not null default 0,
-  cost_usd          numeric(12, 8) not null default 0,
+  cost_cny          numeric(12, 6) not null default 0,
+  counted           boolean     not null default true,  -- false: unusable reply, not charged to the learner's quota
+  prompt_version    text,
   ip_hash           text        -- salted SHA-256 of the caller's IP, for the per-IP daily limit
 );
 create index ai_usage_user_day on public.ai_usage (user_id, created_at);
@@ -59,10 +61,10 @@ returns table (today_count int, ip_today int, month_cost numeric)
 language sql stable security definer set search_path = public as $$
   select
     (select count(*)::int from ai_usage
-      where user_id = uid and created_at >= date_trunc('day', now() at time zone 'utc') at time zone 'utc'),
+      where user_id = uid and counted and created_at >= date_trunc('day', now() at time zone 'utc') at time zone 'utc'),
     (select count(*)::int from ai_usage
-      where ip_hash = iph and created_at >= date_trunc('day', now() at time zone 'utc') at time zone 'utc'),
-    (select coalesce(sum(cost_usd), 0) from ai_usage
+      where ip_hash = iph and counted and created_at >= date_trunc('day', now() at time zone 'utc') at time zone 'utc'),
+    (select coalesce(sum(cost_cny), 0) from ai_usage
       where created_at >= date_trunc('month', now() at time zone 'utc') at time zone 'utc');
 $$;
 revoke all on function public.usage_status(uuid, text) from public, anon, authenticated;
