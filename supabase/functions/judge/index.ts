@@ -18,7 +18,7 @@
 // Optional: AI_MODEL (qwen-plus), DAILY_LIMIT (60), IP_DAILY_LIMIT (180), MONTHLY_BUDGET_CNY (150),
 //           PRICE_IN_PER_M_CNY / PRICE_OUT_PER_M_CNY (yuan per million tokens; check the console's price list)
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { parseReply, type Judgement } from "./parse.ts";
+import { parseReply, followsRules, sanitize, type Judgement } from "./parse.ts";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -36,7 +36,7 @@ const PRICE_IN = Number(env("PRICE_IN_PER_M_CNY", "0.8"));
 const PRICE_OUT = Number(env("PRICE_OUT_PER_M_CNY", "2"));
 const BASE_URL = env("AI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/+$/, "");
 const MODEL = env("AI_MODEL", "qwen-plus");
-const PROMPT_VERSION = "judge-v3";
+const PROMPT_VERSION = "judge-v4";
 
 // Server-side key: the legacy service role key, or the first of the newer secret keys
 // (SUPABASE_SECRET_KEYS is a JSON dictionary). Either bypasses RLS; never sent to browsers.
@@ -100,7 +100,10 @@ Decide:
 
 Feedback rules:
 - Every note in Simplified Chinese, short and specific.
-- Say WHERE the problem is by quoting the learner's own words, and in plain everyday Chinese say what is missing or wrong there (e.g. "'may' 后面少了一个动作", "'information' 前面少了一个词"). Do NOT use grammar terms such as 主语、谓语、宾语、及物、不及物、词性、从句、时态、语法成分. NEVER write the corrected sentence and never give the replacement words. A hint question is fine.
+- Say WHERE the problem is by quoting the learner's own words, and in plain everyday Chinese say what is missing or wrong there (e.g. "'may' 后面少了一个动作", "'information' 前面少了一个词", "'arise' 后面接的东西不对，想想它通常描述什么自己出现").
+- Only quote words that appear in the learner's sentence. Never write any English the learner did not write, never write the correct wording (not even part of it), and never say what it "should be" (no "才是", "应该改成", "换成").
+- Use everyday words only. Do NOT use any grammar term: 主语、谓语、宾语、表语、定语、状语、及物、不及物、词性、动词、名词、形容词、副词、介词、冠词、从句、时态、语序、单复数、语法成分.
+- A hint question is fine.
 - For "good": issues is [] and praise is one short encouraging Chinese sentence. For "bad": praise is "".
 - Always fill "usage" (both verdicts), in plain everyday Simplified Chinese, at most 2 short sentences: what this word is usually used to describe (what kind of thing or situation), plus 2-3 common English collocations (short phrases like "an issue arises", never a full example sentence and never a fix for the learner's sentence). No grammar terms (same list as above).
 
@@ -151,6 +154,8 @@ Deno.serve(async (req) => {
     }
     result = parseReply(reply.content, reply.finish);
     if (!result) lastError = "invalid_json";
+    // feedback that uses grammar jargon or gives the answer: ask once more, then drop those notes
+    else if (!followsRules(result, sentence)) result = attempt === 0 ? null : sanitize(result, sentence);
     // the call cost money either way; only a judgement the learner receives counts toward quotas
     await admin.from("ai_usage").insert({
       user_id: user.id,
