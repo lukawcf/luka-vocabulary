@@ -298,7 +298,9 @@ const PRESETS = [
 let AI = null;
 try{ AI = JSON.parse(localStorage.getItem(AI_KEY)||"null"); }catch(e){}
 function saveAI(){ try{ localStorage.setItem(AI_KEY, JSON.stringify(AI)); }catch(e){} }
-const ownKeyReady = () => !!(AI && AI.base && AI.model && (AI.key || AI.noKey));
+// In cloud mode every judgement goes through the project's judge function; a learner's own key
+// is only used in local mode (no Supabase config).
+const ownKeyReady = () => !cloudOn && !!(AI && AI.base && AI.model && (AI.key || AI.noKey));
 
 async function chat(prompt, cfg=AI){
   const base = cfg.base.trim().replace(/\/+$/,"");
@@ -351,8 +353,8 @@ function syncAi(){
 }
 function errCopy(e){
   const c = e && e.code;
-  if(c==="daily_limit") return "今天的免费判断次数用完了，明天再来。也可以在「设置」里填自己的 API Key。";
-  if(c==="budget") return "这个月的免费额度已经用完了，下个月恢复。也可以在「设置」里填自己的 API Key。";
+  if(c==="daily_limit") return "今天的免费判断次数用完了，明天再来。";
+  if(c==="budget") return "这个月的免费额度已经用完了，下个月恢复。";
   if(c==="too_long") return "句子太长了，控制在 200 个字符以内";
   if(c==="unauthorized") return "连接过期了，刷新页面再试";
   if(c==="upstream" || c==="invalid_json" || c==="server") return "AI 暂时没响应，过几秒再提交一次";
@@ -723,7 +725,11 @@ function verdictHTML(t){
   </div>`;
 }
 
-/* ---------------- settings: AI, backup, Skill export ---------------- */
+/* ---------------- settings: AI, backup, Skill export ----------------
+   Cloud mode shows only cloud progress and backup. The AI panel exists only in local mode.
+   Skill export is not released yet: the sentences it would use are still recorded on every card,
+   and setting SKILL_EXPORT to true brings the panel back. */
+const SKILL_EXPORT = false;
 let view = (cloudOn || aiReady()) ? "learn" : "settings";
 function renderSettings(){
   const first = !cloudOn && !aiReady();
@@ -733,9 +739,8 @@ function renderSettings(){
   $("#view").innerHTML = `
   ${accountHTML()}
   ${first ? `<div class="panel"><h2>先配置一个 AI</h2><p class="muted">造句要靠 AI 判 🌸 还是 💩。用你自己的 API Key，任何一家都行，判一句话的费用通常不到一分钱。</p></div>` : ""}
-  <div class="panel">
-    <h2>${cloudOn ? "使用自己的 API Key（可选）" : "AI 设置"}</h2>
-    ${cloudOn ? `<p class="muted small">不填也能用，每天有免费的判断次数。填了自己的 Key 就不受次数限制，费用算在你自己的账户上。</p>` : ""}
+  ${cloudOn ? "" : `<div class="panel">
+    <h2>AI 设置</h2>
     <label class="field">服务商
       <select id="aiPreset">${PRESETS.map(x=>`<option value="${x.id}" ${x.id===p.id?"selected":""}>${esc(x.name)}</option>`).join("")}</select>
     </label>
@@ -748,16 +753,15 @@ function renderSettings(){
     <div class="row spread">
       <span class="muted small" id="aiTest"></span>
       <div class="row">
-        ${cloudOn && AI ? `<button class="btn" data-act="aiclear">不用自己的 Key</button>` : ""}
         <button class="btn" data-act="aitest">测试连接</button>
         <button class="btn primary" data-act="aisave">保存</button>
       </div>
     </div>
-  </div>
+  </div>`}
   ${first ? "" : `
   <div class="panel">
     <h2>备份进度</h2>
-    <p class="muted small">${cloudOn ? "进度已经保存在云端。备份用来自己留一份存档，或者和 claude.ai 版互相转移进度。" : "学习记录只存在这个浏览器里。换设备或清理浏览器前，先导出一份备份，到新设备上再导入。"}备份里不包含 API Key。</p>
+    <p class="muted small">${cloudOn ? "进度已经保存在云端。备份用来自己留一份存档，或者和 claude.ai 版互相转移进度。" : "学习记录只存在这个浏览器里。换设备或清理浏览器前，先导出一份备份，到新设备上再导入。备份里不包含 API Key。"}</p>
     <div class="row spread">
       <span class="muted small" id="bakState"></span>
       <div class="row">
@@ -766,7 +770,7 @@ function renderSettings(){
       </div>
     </div>
   </div>
-  <div class="panel">
+  ${SKILL_EXPORT ? `<div class="panel">
     <h2>导出为 Skill</h2>
     <p class="muted small">把你拿到 🌸 的句子和常忘的单词打包成 SKILL.md，装进你自己的 AI（比如 Claude 的 Skills）。以后让它帮你写英文，它会用你熟悉的单词和句式。</p>
     <div class="row spread">
@@ -776,7 +780,7 @@ function renderSettings(){
         <button class="btn primary" data-act="skilldl">下载 SKILL.md</button>
       </div>
     </div>
-  </div>
+  </div>` : ""}
   <div class="row"><button class="btn" data-act="back">返回学习</button></div>`}`;
 }
 function readForm(){

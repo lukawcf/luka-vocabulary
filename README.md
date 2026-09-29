@@ -11,8 +11,9 @@
 - 今天的任务做完后进入加练：**每小时刷新 5 个**加练单词
 - 中文释义默认隐藏，点「看中文」才显示；看过的词会更早回来复习
 - 美式发音，支持语音输入（Chrome / Edge）
-- **自带 API Key**：支持 Claude、OpenAI、Gemini、DeepSeek、通义千问、Kimi、智谱、硅基流动、OpenRouter、Ollama，以及任何兼容 OpenAI 接口的服务
-- 导出和导入进度备份；把拿到 🌸 的句子导出为 SKILL.md
+- **免费 AI 判断**：网页版用项目自己的千问（qwen-flash）判句子，用户不用注册、不用填 Key，每人每天有免费次数
+- **本地模式自带 API Key**：`config.js` 留空时，用户可以接 Claude、OpenAI、Gemini、DeepSeek、通义千问、Kimi、智谱、硅基流动、OpenRouter、Ollama，以及任何兼容 OpenAI 接口的服务
+- 导出和导入进度备份（「导出为 Skill」已实现但暂未开放，见 `index.html` 里的 `SKILL_EXPORT`）
 
 ## 运行
 
@@ -35,7 +36,8 @@ GitHub Pages：把仓库推送到 GitHub，然后在 Settings → Pages 里选�
 ## 数据与隐私
 
 - 网页版默认是云端免费模式（见 `supabase/README.md`）：打开即自动创建匿名账号，进度存在 Supabase 数据库，行级权限保证每个人只能读写自己的数据；句子由服务器函数交给千问判断，每人每天有免费次数
-- 用户也可以在「设置」里填自己的 API Key：Key 只保存在自己浏览器里，判断时浏览器直接请求所选的服务商，不经过我们的服务器，也不受次数限制
+- 云端模式不提供自带 Key 的选项，所有判断都经过服务器函数
+- 本地模式下用户填的 API Key 只保存在自己浏览器里，判断时浏览器直接请求所选的服务商，不经过我们的服务器
 - `config.js` 里的 Supabase 地址留空时，App 回到纯本地模式：进度只存在浏览器 localStorage
 - 备份文件不包含 API Key
 
