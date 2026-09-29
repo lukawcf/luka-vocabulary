@@ -38,7 +38,14 @@ const BASE_URL = env("AI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-m
 const MODEL = env("AI_MODEL", "qwen-plus");
 const PROMPT_VERSION = "judge-v3";
 
-const admin = createClient(env("SUPABASE_URL"), env("SUPABASE_SERVICE_ROLE_KEY"));
+// Server-side key: the legacy service role key, or the first of the newer secret keys
+// (SUPABASE_SECRET_KEYS is a JSON dictionary). Either bypasses RLS; never sent to browsers.
+function serverKey() {
+  const legacy = env("SUPABASE_SERVICE_ROLE_KEY");
+  if (legacy) return legacy;
+  try { return Object.values(JSON.parse(env("SUPABASE_SECRET_KEYS", "{}")))[0] as string; } catch { return ""; }
+}
+const admin = createClient(env("SUPABASE_URL"), serverKey());
 
 async function ipHash(req: Request) {
   const ip = (req.headers.get("x-forwarded-for") ?? "").split(",")[0].trim() || "unknown";
