@@ -79,11 +79,11 @@ export function sanitize(j: Judgement, sentence: string): Judgement {
   return { ...j, issues, usage: GRAMMAR_TERMS.test(j.usage) ? "" : j.usage };
 }
 
-// Spelling pre-pass. A typo like "fureture" makes a small model reject a sentence for made-up
-// reasons, so the server first asks for spelling fixes and grades the fixed sentence. The model
-// may also "fix" grammar (have → has, issue → issues), which would let a wrong sentence pass, so a
-// change is kept only when it looks like a typo: same number of words, small edit, not a word
-// growing an ending, not a common little word, and never the target word.
+// Correction pre-pass. A small model grading a sentence that also has a typo or a grammar slip
+// tends to blame the target word for it ("'rare' 不能形容 place"). So the server first asks for a
+// minimally corrected sentence, grades the corrected one for how the target word is used, and
+// finds the slips itself by comparing the two word by word (diffWords). A one-word change that
+// looks like a typo is only pointed out; any other change is a real mistake at that spot.
 const COMMON = new Set(("a an the this that these those it its is are was were be been am have has had do does did " +
   "go goes went he she him her his they them their there we us our you your i me my to too of off in on at " +
   "for from by with as than then no not now know new few").split(" "));
@@ -109,20 +109,44 @@ export function looksLikeTypo(wrong: string, right: string, target: string): boo
   return editDistance(w, r) <= (r.length >= 7 ? 3 : 2);
 }
 
-// Returns the sentence with only the accepted typo fixes applied, and the misspelled words.
-export function applySpellingFixes(original: string, fixed: string, target: string): { sentence: string; typos: string[] } {
-  const WORD = /[A-Za-z]+(?:'[A-Za-z]+)?/g;
-  const a = [...original.matchAll(WORD)], b = [...String(fixed ?? "").matchAll(WORD)];
-  if (!b.length || a.length !== b.length) return { sentence: original, typos: [] };
-  let out = "", at = 0;
-  const typos: string[] = [];
-  a.forEach((m, i) => {
-    if (!looksLikeTypo(m[0], b[i][0], target)) return;
-    out += original.slice(at, m.index) + b[i][0];
-    at = m.index! + m[0].length;
-    typos.push(m[0]);
-  });
-  return { sentence: out + original.slice(at), typos };
+export type Spot = { word: string; kind: "wrong" | "missing" | "extra" };
+export type WordDiff = { typos: string[]; spots: Spot[]; changed: number; total: number };
+
+const WORD = /[A-Za-z]+(?:'[A-Za-z]+)?/g;
+const words = (s: string) => [...String(s ?? "").matchAll(WORD)].map((m) => m[0]);
+
+// Longest-common-subsequence alignment of the two word lists; every run of unmatched words is one
+// change. Punctuation and letter case are ignored.
+export function diffWords(original: string, fixed: string, target: string): WordDiff {
+  const a = words(original), b = words(fixed);
+  const A = a.map((w) => w.toLowerCase()), B = b.map((w) => w.toLowerCase());
+  const n = A.length, m = B.length;
+  const L = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--)
+    L[i][j] = A[i] === B[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  const out: WordDiff = { typos: [], spots: [], changed: 0, total: n };
+  let i = 0, j = 0;
+  while (i < n || j < m) {
+    if (i < n && j < m && A[i] === B[j]) { i++; j++; continue; }
+    const i0 = i, j0 = j;
+    while ((i < n || j < m) && !(i < n && j < m && A[i] === B[j])) {
+      if (j >= m || (i < n && L[i + 1][j] >= L[i][j + 1])) i++; else j++;
+    }
+    const gone = a.slice(i0, i), added = b.slice(j0, j);
+    out.changed += Math.max(gone.length, added.length);
+    if (gone.length === 1 && added.length === 1 && looksLikeTypo(gone[0], added[0], target)) out.typos.push(gone[0]);
+    else if (gone.length) out.spots.push({ word: gone.join(" "), kind: added.length ? "wrong" : "extra" });
+    else out.spots.push({ word: a[i0 - 1] ?? a[i0] ?? "", kind: "missing" });
+  }
+  out.spots = out.spots.filter((x) => x.word);
+  return out;
+}
+
+// Used when no rule-following hint could be written for a spot.
+export function spotNote(x: Spot): string {
+  if (x.kind === "missing") return `'${x.word}' 附近少了一点东西，读一读，想想这里还缺什么。`;
+  if (x.kind === "extra") return `'${x.word}' 这里好像多了点什么，读一读，想想去掉会不会更顺。`;
+  return `'${x.word}' 这里不太对，再读一遍这一处，想想哪里要变一变。`;
 }
 
 // finish_reason "length" means the reply was cut off, so even parseable JSON is incomplete.

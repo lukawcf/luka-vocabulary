@@ -6,10 +6,11 @@
 //   - input sizes (word, meaning, sentence)
 //   - DAILY_LIMIT judgements per user and IP_DAILY_LIMIT per IP per UTC day
 //   - MONTHLY_BUDGET_CNY across all users per UTC month (then AI judging pauses for everyone)
-// A misspelled word is fixed first (spelling pre-pass) and pointed out, but does not fail the
-// sentence by itself. A reply that is cut off, not JSON, or missing the verdict is asked for once
-// more; notes that break the feedback rules are rewritten once, then filtered. Transient
-// upstream failures (network, 429, 5xx) are retried once too. Every model call is recorded in
+// A correction pass runs first: typos are only pointed out, other slips fail the sentence with a
+// hint at that spot, and the corrected sentence is graded for how the target word is used. A reply
+// that is cut off, not JSON, or missing the verdict is asked for once more; notes that break the
+// feedback rules are rewritten once, then filtered. Transient upstream failures (network, 429, 5xx)
+// are retried once too. Every model call is recorded in
 // ai_usage with its cost; only a judgement that reached the learner counts toward their quota.
 //
 // Secrets (supabase secrets set ...):
@@ -20,7 +21,7 @@
 // Optional: AI_MODEL (qwen-plus), DAILY_LIMIT (60), IP_DAILY_LIMIT (180), MONTHLY_BUDGET_CNY (150),
 //           PRICE_IN_PER_M_CNY / PRICE_OUT_PER_M_CNY (yuan per million tokens; check the console's price list)
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { parseReply, followsRules, sanitize, applySpellingFixes, extractJson, type Judgement } from "./parse.ts";
+import { parseReply, followsRules, sanitize, diffWords, spotNote, ruleBreaks, extractJson, type WordDiff, type Judgement } from "./parse.ts";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -38,7 +39,7 @@ const PRICE_IN = Number(env("PRICE_IN_PER_M_CNY", "0.8"));
 const PRICE_OUT = Number(env("PRICE_OUT_PER_M_CNY", "2"));
 const BASE_URL = env("AI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/+$/, "");
 const MODEL = env("AI_MODEL", "qwen-plus");
-const PROMPT_VERSION = "judge-v10";
+const PROMPT_VERSION = "judge-v11";
 
 // Server-side key: the legacy service role key, or the first of the newer secret keys
 // (SUPABASE_SECRET_KEYS is a JSON dictionary). Either bypasses RLS; never sent to browsers.
@@ -90,8 +91,8 @@ async function callModel(prompt: string): Promise<ModelReply> {
   };
 }
 
-function spellingPrompt(word: string, sentence: string) {
-  return `Fix only misspelled words in this English sentence: strings that are not real English words. Do not change grammar, word endings, word choice or word order, and never change "${word}". If nothing is misspelled, return the sentence unchanged.
+function correctionPrompt(word: string, sentence: string) {
+  return `Correct this sentence written by an English learner, changing as little as possible: fix spelling and clear grammar mistakes only (wrong word forms, missing or extra small words). Do not change word choice, style or meaning, do not make it sound more natural, and keep the word "${word}" (only its form may change if the grammar needs it). If it is already correct, return it unchanged.
 
 Sentence: """${sentence}"""
 
@@ -140,6 +141,22 @@ ${NOTE_RULES}
 Reply with only JSON: {"notes":["...", "..."]}`;
 }
 
+// One hint per mistake the correction pass found, written from the hidden corrected sentence.
+function hintPrompt(sentence: string, fixed: string, spots: WordDiff["spots"]) {
+  const where = spots.map((x) => `'${x.word}'` + (x.kind === "missing" ? "（附近少了东西）" : x.kind === "extra" ? "（这里多了东西）" : "")).join("、");
+  return `A Chinese learner of English wrote:
+"""${sentence}"""
+A teacher's corrected version, which the learner must NOT see (never reveal it or any word of it that the learner did not write):
+"""${fixed}"""
+
+Write one short hint for each of these places, in this order: ${where}
+Each hint says what is wrong at that place without giving the answer, following these rules:
+- Every note in Simplified Chinese, short and specific.
+${NOTE_RULES}
+
+Reply with only JSON: {"notes":["...", "..."]}`;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   if (req.method !== "POST") return json({ code: "method" }, 405);
@@ -178,13 +195,18 @@ Deno.serve(async (req) => {
     prompt_version: PROMPT_VERSION,
   });
 
-  // spelling pre-pass (see applySpellingFixes); if it fails, grade the sentence as written
-  let graded = sentence, typos: string[] = [];
+  // correction pass (see diffWords): find typos and slips, then grade the corrected sentence for how
+  // the target word is used. If it fails or rewrote too much, grade the sentence as written.
+  let graded = sentence;
+  let diff: WordDiff = { typos: [], spots: [], changed: 0, total: 0 };
   try {
-    const sp = await callModel(spellingPrompt(word, sentence));
-    await logUsage(sp, false);
-    const fixed = (extractJson(sp.content) as { fixed?: unknown } | null)?.fixed;
-    if (sp.finish !== "length" && typeof fixed === "string") ({ sentence: graded, typos } = applySpellingFixes(sentence, fixed, word));
+    const c = await callModel(correctionPrompt(word, sentence));
+    await logUsage(c, false);
+    const fixed = (extractJson(c.content) as { fixed?: unknown } | null)?.fixed;
+    if (c.finish !== "length" && typeof fixed === "string" && fixed.trim()) {
+      const d = diffWords(sentence, fixed, word);
+      if (d.changed <= Math.max(3, Math.ceil(d.total / 2))) { graded = fixed.trim(); diff = d; }
+    }
   } catch { /* grade as written */ }
 
   // ask the model: at most two calls (one retry for a transient failure or an unusable reply)
@@ -208,9 +230,9 @@ Deno.serve(async (req) => {
   }
   // feedback that uses grammar jargon or gives the answer: have it rewritten for this sentence;
   // anything still breaking the rules after that is dropped (sanitize keeps where the problem is)
-  if (result && !followsRules(result, graded)) {
+  if (result && !followsRules(result, sentence)) {
     try {
-      const rw = await callModel(rewritePrompt(word, graded, result));
+      const rw = await callModel(rewritePrompt(word, sentence, result));
       await logUsage(rw, false);
       const notes = (extractJson(rw.content) as { notes?: unknown } | null)?.notes;
       if (rw.finish !== "length" && Array.isArray(notes) && notes.length) {
@@ -219,10 +241,25 @@ Deno.serve(async (req) => {
           .filter((x) => x.note);
       }
     } catch { /* fall through to sanitize */ }
-    if (!followsRules(result, graded)) result = sanitize(result, graded);
+    if (!followsRules(result, sentence)) result = sanitize(result, sentence);
   }
   if (!result) return json({ code: lastError }, 502);
-  if (typos.length) {
+  // mistakes found by the correction pass: the sentence is bad, with one hint per spot
+  if (diff.spots.length) {
+    let hints: string[] = [];
+    try {
+      const h = await callModel(hintPrompt(sentence, graded, diff.spots));
+      await logUsage(h, false);
+      const notes = (extractJson(h.content) as { notes?: unknown } | null)?.notes;
+      if (h.finish !== "length" && Array.isArray(notes)) hints = notes.map((n) => String(n ?? "").trim().slice(0, 200));
+    } catch { /* fall back to spotNote */ }
+    const ok = (n?: string) => !!n && !ruleBreaks(n, sentence);
+    const slips = diff.spots.slice(0, 3).map((x, i) => ({ type: "grammar", note: ok(hints[i]) ? hints[i] : spotNote(x) }));
+    const wordNotes = result.verdict === "bad" ? result.issues : [];
+    result = { ...result, verdict: "bad", praise: "", issues: [...slips, ...wordNotes].slice(0, 4) };
+  }
+  if (diff.typos.length) {
+    const typos = diff.typos;
     const note = `${typos.map((t) => `'${t}'`).join("、")} 拼错了，再检查一下拼写。`;
     if (result.verdict === "good") result.praise = `${result.praise} 小提示：${note}`.trim();
     else result.issues = [...result.issues.slice(0, 3), { type: "usage", note }];
