@@ -36,7 +36,7 @@ const PRICE_IN = Number(env("PRICE_IN_PER_M_CNY", "0.8"));
 const PRICE_OUT = Number(env("PRICE_OUT_PER_M_CNY", "2"));
 const BASE_URL = env("AI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/+$/, "");
 const MODEL = env("AI_MODEL", "qwen-plus");
-const PROMPT_VERSION = "judge-v4";
+const PROMPT_VERSION = "judge-v5";
 
 // Server-side key: the legacy service role key, or the first of the newer secret keys
 // (SUPABASE_SECRET_KEYS is a JSON dictionary). Either bypasses RLS; never sent to browsers.
@@ -95,8 +95,8 @@ Target word: "${word}" (meaning: ${meaning})
 Learner's sentence: """${sentence}"""
 
 Decide:
-- "good" if the sentence uses the target word (any inflected form) correctly, is grammatical, and sounds like something an American native speaker would naturally say. Simple sentences are fine and should pass.
-- "bad" if it has any grammar error, misuses the target word, does not contain the target word, or sounds unnatural.
+- "good" whenever the target word (any inflected form) is used with a meaning it really has and the sentence is understandable and basically grammatical. Be lenient: figurative, creative, formal or casual uses all pass, and so does anything a fluent speaker could plausibly say or write (quotes from real speeches count). Never fail a sentence only because another wording is more common or for style preferences. Simple sentences pass. A small typo in a word other than the target word does not make it bad; praise may point it out by quoting that word.
+- "bad" only for a clear problem: the target word is missing or misspelled, it is used with a meaning it does not have, or there is a mistake a native speaker would call wrong (not just unusual). When unsure, choose "good".
 
 Feedback rules:
 - Every note in Simplified Chinese, short and specific.
