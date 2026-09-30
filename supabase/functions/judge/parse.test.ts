@@ -68,6 +68,7 @@ test("grammar terms and given answers break the rules", () => {
   assert.equal(followsRules(realBad, learner), false);
   assert.equal(ruleBreaks("'dangerous information' 是常见说法", learner), true); // quotes words not in the sentence
   assert.equal(ruleBreaks("'may' 后面少了一个动作", learner), false);
+  assert.equal(ruleBreaks("看看 'no' 后面通常接可数的还是不可数的东西", learner), true);
   assert.equal(ruleBreaks("'arise' 后面接的东西不对，想想它通常描述什么自己出现", learner), false);
 });
 

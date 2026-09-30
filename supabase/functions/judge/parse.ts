@@ -49,7 +49,7 @@ export function toJudgement(value: unknown): Judgement | null {
 // Models do not always follow the prompt, so the server checks. A note breaks the rules when it
 // uses a grammar term, says what the right wording is, or quotes English that is not in the
 // learner's own sentence (that would be handing them replacement words).
-const GRAMMAR_TERMS = /主语|谓语|宾语|表语|定语|状语|补语|及物|不及物|词性|从句|时态|语法成分|语序|动词|名词|形容词|副词|介词|冠词|代词|连词|单数|复数|第三人称|过去式|过去分词|现在分词|被动语态|主动语态|不定式|动名词/;
+const GRAMMAR_TERMS = /主语|谓语|宾语|表语|定语|状语|补语|及物|不及物|词性|从句|时态|语法成分|语序|动词|名词|形容词|副词|介词|冠词|代词|连词|单数|复数|第三人称|过去式|过去分词|现在分词|被动语态|主动语态|不定式|动名词|可数|不可数/;
 const GIVES_ANSWER = /才是|应该改成|应改为|改成|改为|换成|正确的(说法|写法|是)|应该说|应该用|可以说成/;
 const QUOTED = /'([^']+)'|‘([^’]+)’|"([^"]+)"|“([^”]+)”/g;
 

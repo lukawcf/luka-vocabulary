@@ -39,7 +39,7 @@ const PRICE_IN = Number(env("PRICE_IN_PER_M_CNY", "0.8"));
 const PRICE_OUT = Number(env("PRICE_OUT_PER_M_CNY", "2"));
 const BASE_URL = env("AI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/+$/, "");
 const MODEL = env("AI_MODEL", "qwen-plus");
-const PROMPT_VERSION = "judge-v13";
+const PROMPT_VERSION = "judge-v14";
 
 // Server-side key: the legacy service role key, or the first of the newer secret keys
 // (SUPABASE_SECRET_KEYS is a JSON dictionary). Either bypasses RLS; never sent to browsers.
@@ -149,12 +149,13 @@ function hintPrompt(sentence: string, fixed: string, spots: WordDiff["spots"]) {
 A teacher's corrected version, which the learner must NOT see (never reveal it or any word of it that the learner did not write):
 """${fixed}"""
 
-Write one short hint for each of these places, in this order: ${where}
-Each hint says what is wrong at that place without giving the answer, following these rules:
+For each of these places, in this order: ${where}
+1. "wrong": is the learner's own wording there really a mistake that an English teacher would mark? Answer false if it is acceptable English as written, even if the corrected version is also possible or more common (for example "my study" is fine).
+2. "note": only when wrong is true, one short hint that says what is wrong at that place without giving the answer, following these rules:
 - Every note in Simplified Chinese, short and specific.
 ${NOTE_RULES}
 
-Reply with only JSON: {"notes":["...", "..."]}`;
+Reply with only JSON: {"spots":[{"wrong":true,"note":"..."}, ...]} with one item per place, in order.`;
 }
 
 Deno.serve(async (req) => {
@@ -246,17 +247,27 @@ Deno.serve(async (req) => {
   if (!result) return json({ code: lastError }, 502);
   // mistakes found by the correction pass: the sentence is bad, with one hint per spot
   if (diff.spots.length) {
-    let hints: string[] = [];
+    // the hint call also double-checks each spot: a correction pass may "fix" acceptable English
+    let checks: { wrong?: unknown; note?: unknown }[] = [];
     try {
       const h = await callModel(hintPrompt(sentence, graded, diff.spots));
       await logUsage(h, false);
-      const notes = (extractJson(h.content) as { notes?: unknown } | null)?.notes;
-      if (h.finish !== "length" && Array.isArray(notes)) hints = notes.map((n) => String(n ?? "").trim().slice(0, 200));
-    } catch { /* fall back to spotNote */ }
-    const ok = (n?: string) => !!n && !ruleBreaks(n, sentence);
-    const slips = diff.spots.slice(0, 3).map((x, i) => ({ type: "grammar", note: ok(hints[i]) ? hints[i] : spotNote(x) }));
-    const wordNotes = result.verdict === "bad" ? result.issues : [];
-    result = { ...result, verdict: "bad", praise: "", issues: [...slips, ...wordNotes].slice(0, 4) };
+      const items = (extractJson(h.content) as { spots?: unknown } | null)?.spots;
+      if (h.finish !== "length" && Array.isArray(items) && items.length === diff.spots.length) checks = items;
+    } catch { /* keep every spot, with spotNote */ }
+    const ok = (n: string) => !!n && !ruleBreaks(n, sentence);
+    const slips = diff.spots
+      .map((x, i) => ({ x, c: checks[i] ?? {} }))
+      .filter(({ c }) => c.wrong !== false)
+      .slice(0, 3)
+      .map(({ x, c }) => {
+        const note = String(c.note ?? "").trim().slice(0, 200);
+        return { type: "grammar", note: ok(note) ? note : spotNote(x) };
+      });
+    if (slips.length) {
+      const wordNotes = result.verdict === "bad" ? result.issues : [];
+      result = { ...result, verdict: "bad", praise: "", issues: [...slips, ...wordNotes].slice(0, 4) };
+    }
   }
   if (diff.typos.length) {
     const typos = diff.typos;
