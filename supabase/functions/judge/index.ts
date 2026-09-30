@@ -7,7 +7,8 @@
 //   - DAILY_LIMIT judgements per user and IP_DAILY_LIMIT per IP per UTC day
 //   - MONTHLY_BUDGET_CNY across all users per UTC month (then AI judging pauses for everyone)
 // A misspelled word is fixed first (spelling pre-pass) and pointed out, but does not fail the
-// sentence by itself. A reply that is cut off, not JSON, or missing the verdict is asked for once more; transient
+// sentence by itself. A reply that is cut off, not JSON, or missing the verdict is asked for once
+// more; notes that break the feedback rules are rewritten once, then filtered. Transient
 // upstream failures (network, 429, 5xx) are retried once too. Every model call is recorded in
 // ai_usage with its cost; only a judgement that reached the learner counts toward their quota.
 //
@@ -37,7 +38,7 @@ const PRICE_IN = Number(env("PRICE_IN_PER_M_CNY", "0.8"));
 const PRICE_OUT = Number(env("PRICE_OUT_PER_M_CNY", "2"));
 const BASE_URL = env("AI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/+$/, "");
 const MODEL = env("AI_MODEL", "qwen-plus");
-const PROMPT_VERSION = "judge-v9";
+const PROMPT_VERSION = "judge-v10";
 
 // Server-side key: the legacy service role key, or the first of the newer secret keys
 // (SUPABASE_SECRET_KEYS is a JSON dictionary). Either bypasses RLS; never sent to browsers.
@@ -97,6 +98,12 @@ Sentence: """${sentence}"""
 Reply with only JSON: {"fixed":"..."}`;
 }
 
+// How every note must be written; shared by the grading prompt and the rewrite prompt.
+const NOTE_RULES = `- Say WHERE the problem is by quoting the learner's own words, and in plain everyday Chinese say what is missing or wrong there (e.g. "'may' 后面少了一个动作", "'information' 前面少了一个词", "'arise' 后面接的东西不对，想想它通常描述什么自己出现"). When a word has the wrong form, say so in everyday words and hint at why without naming the fix: "'invent' 这个词的样子不对，看看前面说的是一个东西还是好几个", "'go' 说的是昨天的事，这个词的样子要跟着变".
+- Only quote words that appear in the learner's sentence. Never write any English the learner did not write, never write the correct wording (not even part of it), and never say what it "should be" (no "才是", "应该改成", "换成").
+- Use everyday words only. Do NOT use any grammar term: 主语、谓语、宾语、表语、定语、状语、及物、不及物、词性、动词、名词、形容词、副词、介词、冠词、从句、时态、语序、单复数、语法成分.
+- A hint question is fine.`;
+
 function buildPrompt(word: string, meaning: string, sentence: string) {
   return `You are grading one sentence written by a Chinese learner of spoken English. The learner was asked to make up their own sentence using a target word.
 
@@ -111,14 +118,26 @@ Decide:
 
 Feedback rules:
 - Every note in Simplified Chinese, short and specific.
-- Say WHERE the problem is by quoting the learner's own words, and in plain everyday Chinese say what is missing or wrong there (e.g. "'may' 后面少了一个动作", "'information' 前面少了一个词", "'arise' 后面接的东西不对，想想它通常描述什么自己出现"). When a word has the wrong form, say so in everyday words and hint at why without naming the fix: "'invent' 这个词的样子不对，看看前面说的是一个东西还是好几个", "'go' 说的是昨天的事，这个词的样子要跟着变".
-- Only quote words that appear in the learner's sentence. Never write any English the learner did not write, never write the correct wording (not even part of it), and never say what it "should be" (no "才是", "应该改成", "换成").
-- Use everyday words only. Do NOT use any grammar term: 主语、谓语、宾语、表语、定语、状语、及物、不及物、词性、动词、名词、形容词、副词、介词、冠词、从句、时态、语序、单复数、语法成分.
-- A hint question is fine.
+${NOTE_RULES}
 - For "good": issues is [] and praise is one short encouraging Chinese sentence. For "bad": praise is "".
 - Always fill "usage" (both verdicts), in plain everyday Simplified Chinese, at most 2 short sentences: what this word is usually used to describe (what kind of thing or situation), plus 2-3 common English collocations (short phrases like "an issue arises", never a full example sentence and never a fix for the learner's sentence). No grammar terms (same list as above).
 
 Reply with only JSON: {"verdict":"good"|"bad","issues":[{"type":"grammar"|"naturalness"|"usage","note":"..."}],"praise":"...","usage":"..."}`;
+}
+
+// Notes that broke the rules are rewritten for this sentence instead of replaced by a stock line.
+function rewritePrompt(word: string, sentence: string, j: Judgement) {
+  return `A Chinese learner of English wrote this sentence using the word "${word}":
+"""${sentence}"""
+
+A teacher left these notes about it, but some use grammar terms or give away the answer:
+${JSON.stringify(j.issues.map((x) => x.note))}
+
+Rewrite every note for this learner so it points at the same place and the same problem, following these rules:
+- Every note in Simplified Chinese, short and specific.
+${NOTE_RULES}
+
+Reply with only JSON: {"notes":["...", "..."]}`;
 }
 
 Deno.serve(async (req) => {
@@ -184,10 +203,23 @@ Deno.serve(async (req) => {
     }
     result = parseReply(reply.content, reply.finish);
     if (!result) lastError = "invalid_json";
-    // feedback that uses grammar jargon or gives the answer: ask once more, then drop those notes
-    else if (!followsRules(result, graded)) result = attempt === 0 ? null : sanitize(result, graded);
     // the call cost money either way; only a judgement the learner receives counts toward quotas
     await logUsage(reply, !!result);
+  }
+  // feedback that uses grammar jargon or gives the answer: have it rewritten for this sentence;
+  // anything still breaking the rules after that is dropped (sanitize keeps where the problem is)
+  if (result && !followsRules(result, graded)) {
+    try {
+      const rw = await callModel(rewritePrompt(word, graded, result));
+      await logUsage(rw, false);
+      const notes = (extractJson(rw.content) as { notes?: unknown } | null)?.notes;
+      if (rw.finish !== "length" && Array.isArray(notes) && notes.length) {
+        const types = result.issues.map((x) => x.type);
+        result.issues = notes.slice(0, 4).map((n, i) => ({ type: types[i] ?? "usage", note: String(n ?? "").trim().slice(0, 200) }))
+          .filter((x) => x.note);
+      }
+    } catch { /* fall through to sanitize */ }
+    if (!followsRules(result, graded)) result = sanitize(result, graded);
   }
   if (!result) return json({ code: lastError }, 502);
   if (typos.length) {
