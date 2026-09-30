@@ -63,9 +63,19 @@ export function followsRules(j: Judgement, sentence: string): boolean {
   return j.issues.every((x) => !ruleBreaks(x.note, sentence)) && !GRAMMAR_TERMS.test(j.usage);
 }
 // Last resort when a retry still breaks the rules: drop the offending notes rather than show them.
+// The place a dropped note pointed at (a quoted word from the learner's own sentence) is kept, so
+// the learner still knows where to look.
 export function sanitize(j: Judgement, sentence: string): Judgement {
   const issues = j.issues.filter((x) => !ruleBreaks(x.note, sentence));
-  if (j.verdict === "bad" && !issues.length) issues.push({ type: "naturalness", note: "这句还有地方不太对，再读一遍，想想哪里少了或多了什么。" });
+  if (j.verdict === "bad" && !issues.length) {
+    const own = sentence.toLowerCase();
+    const spots = [...new Set(j.issues.flatMap((x) => [...x.note.matchAll(QUOTED)]
+      .map((m) => (m[1] ?? m[2] ?? m[3] ?? m[4] ?? "").trim())
+      .filter((q) => /[a-z]/i.test(q) && own.includes(q.toLowerCase()))))].slice(0, 2);
+    issues.push({ type: "naturalness", note: spots.length
+      ? `${spots.map((q) => `'${q}'`).join("、")} 这里不太对，再读一遍这一处，想想少了或多了什么。`
+      : "这句还有地方不太对，再读一遍，想想哪里少了或多了什么。" });
+  }
   return { ...j, issues, usage: GRAMMAR_TERMS.test(j.usage) ? "" : j.usage };
 }
 

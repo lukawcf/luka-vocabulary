@@ -95,3 +95,12 @@ test("spelling fixes: typos are fixed, grammar fixes and the target word are not
   assert.deepEqual(applySpellingFixes(s, "CMU invents the future.", "rare"), { sentence: s, typos: [] }); // rewritten
   assert.deepEqual(applySpellingFixes("I walk home.", "I walked home.", "home"), { sentence: "I walk home.", typos: [] });
 });
+
+test("sanitize keeps where the problem is when every note broke the rules", () => {
+  const s = "It is a rare place that invent the future.";
+  const j = { verdict: "bad" as const, praise: "", usage: "", issues: [{ type: "grammar", note: "'invent' 要用第三人称单数 'invents'" }] };
+  const out = sanitize(j, s);
+  assert.equal(out.issues.length, 1);
+  assert.ok(out.issues[0].note.startsWith("'invent' 这里不太对"));
+  assert.ok(!out.issues[0].note.includes("invents"));
+});
