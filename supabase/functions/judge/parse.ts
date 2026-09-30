@@ -26,7 +26,11 @@ export function extractJson(text: string): unknown {
 // learner a 💩 for the model's mistake, so it counts as an unusable reply and is asked again.
 export function toJudgement(value: unknown): Judgement | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const r = value as Record<string, unknown>;
+  let r = value as Record<string, unknown>;
+  // the server's narrow "does the word fit" reply: {fits, note, praise, usage}
+  if (r.verdict === undefined && typeof r.fits === "boolean") {
+    r = { ...r, verdict: r.fits ? "good" : "bad", issues: r.fits ? [] : [{ type: "usage", note: r.note }] };
+  }
   if (r.verdict !== "good" && r.verdict !== "bad") return null;
   const issues = Array.isArray(r.issues) ? r.issues : [];
   return {

@@ -110,3 +110,13 @@ test("sanitize keeps where the problem is when every note broke the rules", () =
   assert.ok(out.issues[0].note.startsWith("'invent' 这里不太对"));
   assert.ok(!out.issues[0].note.includes("invents"));
 });
+
+test("narrow fit reply maps to a judgement", () => {
+  assert.deepEqual(parseReply('{"fits":true,"note":"","praise":"不错","usage":"u"}', "stop"),
+    { verdict: "good", issues: [], praise: "不错", usage: "u" });
+  const bad = parseReply(JSON.stringify({ fits: false, note: "'rare' 这里的意思对不上", praise: "x", usage: "u" }), "stop");
+  assert.equal(bad?.verdict, "bad");
+  assert.equal(bad?.praise, "");
+  assert.deepEqual(bad?.issues, [{ type: "usage", note: "'rare' 这里的意思对不上" }]);
+  assert.equal(parseReply('{"fits":"yes"}', "stop"), null);
+});

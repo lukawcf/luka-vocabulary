@@ -39,7 +39,7 @@ const PRICE_IN = Number(env("PRICE_IN_PER_M_CNY", "0.8"));
 const PRICE_OUT = Number(env("PRICE_OUT_PER_M_CNY", "2"));
 const BASE_URL = env("AI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/+$/, "");
 const MODEL = env("AI_MODEL", "qwen-plus");
-const PROMPT_VERSION = "judge-v11";
+const PROMPT_VERSION = "judge-v12";
 
 // Server-side key: the legacy service role key, or the first of the newer secret keys
 // (SUPABASE_SECRET_KEYS is a JSON dictionary). Either bypasses RLS; never sent to browsers.
@@ -105,25 +105,25 @@ const NOTE_RULES = `- Say WHERE the problem is by quoting the learner's own word
 - Use everyday words only. Do NOT use any grammar term: 主语、谓语、宾语、表语、定语、状语、及物、不及物、词性、动词、名词、形容词、副词、介词、冠词、从句、时态、语序、单复数、语法成分.
 - A hint question is fine.`;
 
+// Grammar and spelling are handled by the correction pass, so this asks one narrow question about
+// the already-corrected sentence: is the target word used with a meaning it really has?
 function buildPrompt(word: string, meaning: string, sentence: string) {
-  return `You are grading one sentence written by a Chinese learner of spoken English. The learner was asked to make up their own sentence using a target word.
+  return `A Chinese learner of English made up a sentence with the word "${word}" (dictionary meaning: ${meaning}). Its grammar and spelling have already been checked; do not judge them.
 
-Target word: "${word}" (meaning: ${meaning})
-Learner's sentence: """${sentence}"""
+Sentence: """${sentence}"""
 
-First, silently fix any misspelled word other than the target word (for example read "beautful" as "beautiful") and grade that fixed sentence; those typos alone never make it bad.
+Question: is "${word}" (any form of it) used here with a meaning it really has, either the dictionary meaning above or another real meaning of the word?
+- Answer true unless that meaning clearly does not fit. Figurative, creative, formal and casual uses are true. Quotes from real speeches are true.
+- Do NOT judge whether the statement is true, logical, common, stylish or how the word is "usually" used. A rare, unusual or bold claim is still true.
+- Answer false only if the word is missing, or it is used as if it meant something it never means.
 
-Decide:
-- "good" whenever the target word (any inflected form) is used with a meaning it really has and the sentence is understandable and basically grammatical. Be lenient: figurative, creative, formal or casual uses all pass, and so does anything a fluent speaker could plausibly say or write (quotes from real speeches count). Never fail a sentence only because another wording is more common, because of style, or because you doubt whether the statement is true or logical; judge the English, not the opinion. Do not fail it by claiming the word is "usually" used for something else when this meaning is listed above. Simple sentences pass. If you fixed a typo and the sentence is otherwise fine, answer "good" and let praise point out the misspelled word by quoting it.
-- "bad" only for a clear problem: the target word is missing or misspelled, it is used with a meaning it does not have, or there is a mistake a native speaker would call wrong (not just unusual). When unsure, choose "good".
-
-Feedback rules:
+If false, write "note" for the learner:
 - Every note in Simplified Chinese, short and specific.
 ${NOTE_RULES}
-- For "good": issues is [] and praise is one short encouraging Chinese sentence. For "bad": praise is "".
-- Always fill "usage" (both verdicts), in plain everyday Simplified Chinese, at most 2 short sentences: what this word is usually used to describe (what kind of thing or situation), plus 2-3 common English collocations (short phrases like "an issue arises", never a full example sentence and never a fix for the learner's sentence). No grammar terms (same list as above).
+If true, "praise" is one short encouraging Chinese sentence; otherwise "".
+Always fill "usage", in plain everyday Simplified Chinese, at most 2 short sentences: what this word is usually used to describe (what kind of thing or situation), plus 2-3 common English collocations (short phrases like "an issue arises", never a full example sentence and never a fix for the learner's sentence). No grammar terms.
 
-Reply with only JSON: {"verdict":"good"|"bad","issues":[{"type":"grammar"|"naturalness"|"usage","note":"..."}],"praise":"...","usage":"..."}`;
+Reply with only JSON: {"fits":true|false,"note":"...","praise":"...","usage":"..."}`;
 }
 
 // Notes that broke the rules are rewritten for this sentence instead of replaced by a stock line.
