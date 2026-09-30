@@ -13,6 +13,7 @@
 - 美式发音，支持语音输入（Chrome / Edge）
 - **免费 AI 判断**：网页版用项目自己的千问（qwen-flash）判句子，用户不用注册、不用填 Key，每人每天有免费次数
 - **本地模式自带 API Key**：`config.js` 留空时，用户可以接 Claude、OpenAI、Gemini、DeepSeek、通义千问、Kimi、智谱、硅基流动、OpenRouter、Ollama，以及任何兼容 OpenAI 接口的服务
+- **更新通知**：每次发布新版本，打开的用户会看到这次改了什么；页面一直开着的用户会收到「刷新」提示
 - 导出和导入进度备份（「导出为 Skill」已实现但暂未开放，见 `index.html` 里的 `SKILL_EXPORT`）
 
 ## 运行
@@ -28,6 +29,8 @@ python -m http.server 5173
 然后打开 http://localhost:5173 。
 
 ## 部署
+
+每次发布：把 `index.html` 里的 `APP_VERSION` 改成新版本号（如 `2026.10.02`，同一天多次发布用 `2026.10.02-2`），并在 `changelog.json` 最前面加一条同版本号的更新说明。
 
 放到任意静态托管平台即可，例如 GitHub Pages、Vercel、Netlify。语音识别需要 https，这些平台默认都是 https。
 

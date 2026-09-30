@@ -69,6 +69,9 @@ textarea{width:100%;font:16px/1.5 var(--body);color:var(--ink);background:var(--
 #sayState:empty{display:none}
 .usage{font-size:14px;margin-top:6px;padding:8px 10px;border-radius:8px;background:var(--surface);color:var(--ink)}
 .done-mark{font-size:48px}
+.notice{background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:10px;padding:14px 16px;display:flex;flex-direction:column;gap:8px}
+.notice ul{margin:0;padding-left:18px;font-size:14px}
+.notice .ver{font:500 12px var(--mono);color:var(--muted)}
 @media (max-width:480px){.word{font-size:32px}.panel{padding:18px}}
 </style>
 </head>
@@ -85,6 +88,7 @@ textarea{width:100%;font:16px/1.5 var(--body);color:var(--ink);background:var(--
     </div>
     <div class="row" style="flex-wrap:nowrap"><span class="muted small" id="sync"></span><button class="btn ghost" id="setBtn">设置</button></div>
   </header>
+  <div class="notice" id="notice" role="status" hidden></div>
   <main id="view"></main>
   <p class="muted small">词库：雅思核心 3000 词，取自开源词典 <a href="https://github.com/skywind3000/ECDICT" style="color:var(--accent)">ECDICT</a>（Copyright (c) skywind3000，MIT License）</p>
 </div>
@@ -525,6 +529,43 @@ async function startSync(){
     if(canRerender()) render();
   }catch(e){ setSync("连接失败，进度先存在本机"); }
 }
+/* ---------------- update notice ----------------
+   changelog.json lists releases newest first. Every release bumps APP_VERSION and adds an entry there.
+   - page older than the newest release (it stayed open during an update): offer a refresh
+   - first visit after an update: show what changed since the version this browser last saw
+   New learners start at the current version and see nothing. */
+const APP_VERSION = "2026.10.01";
+const SEEN_KEY = "luka_seen_version";
+function showNotice(title, entries, button, act){
+  const box = $("#notice");
+  box.innerHTML = `<div class="row spread"><strong>${esc(title)}</strong><button class="btn ${act==="reload"?"primary":""}" data-notice="${act}">${esc(button)}</button></div>
+    ${entries.map(e=>`<div><div class="ver">${esc(e.date || e.v)}</div><ul>${(e.items||[]).map(i=>`<li>${esc(i)}</li>`).join("")}</ul></div>`).join("")}`;
+  box.hidden = false;
+}
+$("#notice").addEventListener("click", e=>{
+  const act = e.target.closest("[data-notice]")?.dataset.notice;
+  if(act === "reload") location.replace(location.pathname + "?v=" + encodeURIComponent(latestVersion));
+  if(act === "seen"){ try{ localStorage.setItem(SEEN_KEY, APP_VERSION); }catch(e){} $("#notice").hidden = true; }
+});
+let latestVersion = APP_VERSION;
+async function checkUpdates(){
+  let log;
+  try{ log = await (await fetch("changelog.json?t=" + Date.now(), {cache:"no-store"})).json(); }catch(e){ return; }
+  if(!Array.isArray(log) || !log.length) return;
+  latestVersion = String(log[0].v);
+  if(latestVersion > APP_VERSION){
+    showNotice("有新版本，刷新一下就能用上", log.filter(e=>e.v > APP_VERSION).slice(0,3), "刷新", "reload");
+    return;
+  }
+  let seen = null;
+  try{ seen = localStorage.getItem(SEEN_KEY); }catch(e){}
+  if(!seen && !Object.keys(S.cards||{}).length){ try{ localStorage.setItem(SEEN_KEY, APP_VERSION); }catch(e){} return; }
+  const fresh = log.filter(e=>e.v <= APP_VERSION && (!seen || e.v > seen)).slice(0,3);
+  if(fresh.length) showNotice("本次更新", fresh, "知道了", "seen");
+}
+setInterval(checkUpdates, 30*60*1000);
+document.addEventListener("visibilitychange", ()=>{ if(document.visibilityState==="visible") checkUpdates(); });
+
 document.addEventListener("visibilitychange", ()=>{
   if(document.visibilityState!=="visible" || !syncReady || !session) return;
   pullCloud().then(r=>{ mergeCloud(r); localSave(); if(canRerender()) render(); }).catch(()=>{});
@@ -763,7 +804,7 @@ function renderSettings(){
   ${first ? "" : `
   <div class="panel">
     <h2>备份进度</h2>
-    <p class="muted small">${cloudOn ? "进度已经保存在云端。备份用来自己留一份存档，或者和 claude.ai 版互相转移进度。" : "学习记录只存在这个浏览器里。换设备或清理浏览器前，先导出一份备份，到新设备上再导入。备份里不包含 API Key。"}</p>
+    <p class="muted small">${cloudOn ? "进度已经保存在云端。备份用来自己留一份存档。" : "学习记录只存在这个浏览器里。换设备或清理浏览器前，先导出一份备份，到新设备上再导入。备份里不包含 API Key。"}</p>
     <div class="row spread">
       <span class="muted small" id="bakState"></span>
       <div class="row">
@@ -990,6 +1031,7 @@ setInterval(()=>{
 
 render();
 initCloud();
+checkUpdates();
 </script>
 
 </body>
