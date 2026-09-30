@@ -373,8 +373,10 @@ async function judge(word, meaning, sentence){
 Target word: "${word}" (meaning: ${meaning})
 Learner's sentence: """${sentence}"""
 
+First, silently fix any misspelled word other than the target word (for example read "beautful" as "beautiful") and grade that fixed sentence; those typos alone never make it bad.
+
 Decide:
-- "good" whenever the target word (any inflected form) is used with a meaning it really has and the sentence is understandable and basically grammatical. Be lenient: figurative, creative, formal or casual uses all pass, and so does anything a fluent speaker could plausibly say or write (quotes from real speeches count). Never fail a sentence only because another wording is more common or for style preferences. Simple sentences pass. A small typo in a word other than the target word does not make it bad; praise may point it out by quoting that word.
+- "good" whenever the target word (any inflected form) is used with a meaning it really has and the sentence is understandable and basically grammatical. Be lenient: figurative, creative, formal or casual uses all pass, and so does anything a fluent speaker could plausibly say or write (quotes from real speeches count). Never fail a sentence only because another wording is more common, because of style, or because you doubt whether the statement is true or logical; judge the English, not the opinion. Do not fail it by claiming the word is "usually" used for something else when this meaning is listed above. Simple sentences pass. If you fixed a typo and the sentence is otherwise fine, answer "good" and let praise point out the misspelled word by quoting it.
 - "bad" only for a clear problem: the target word is missing or misspelled, it is used with a meaning it does not have, or there is a mistake a native speaker would call wrong (not just unusual). When unsure, choose "good".
 
 Feedback rules:

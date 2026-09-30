@@ -6,7 +6,8 @@
 //   - input sizes (word, meaning, sentence)
 //   - DAILY_LIMIT judgements per user and IP_DAILY_LIMIT per IP per UTC day
 //   - MONTHLY_BUDGET_CNY across all users per UTC month (then AI judging pauses for everyone)
-// A reply that is cut off, not JSON, or missing the verdict is asked for once more; transient
+// A misspelled word is fixed first (spelling pre-pass) and pointed out, but does not fail the
+// sentence by itself. A reply that is cut off, not JSON, or missing the verdict is asked for once more; transient
 // upstream failures (network, 429, 5xx) are retried once too. Every model call is recorded in
 // ai_usage with its cost; only a judgement that reached the learner counts toward their quota.
 //
@@ -18,7 +19,7 @@
 // Optional: AI_MODEL (qwen-plus), DAILY_LIMIT (60), IP_DAILY_LIMIT (180), MONTHLY_BUDGET_CNY (150),
 //           PRICE_IN_PER_M_CNY / PRICE_OUT_PER_M_CNY (yuan per million tokens; check the console's price list)
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { parseReply, followsRules, sanitize, type Judgement } from "./parse.ts";
+import { parseReply, followsRules, sanitize, applySpellingFixes, extractJson, type Judgement } from "./parse.ts";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -36,7 +37,7 @@ const PRICE_IN = Number(env("PRICE_IN_PER_M_CNY", "0.8"));
 const PRICE_OUT = Number(env("PRICE_OUT_PER_M_CNY", "2"));
 const BASE_URL = env("AI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/+$/, "");
 const MODEL = env("AI_MODEL", "qwen-plus");
-const PROMPT_VERSION = "judge-v5";
+const PROMPT_VERSION = "judge-v8";
 
 // Server-side key: the legacy service role key, or the first of the newer secret keys
 // (SUPABASE_SECRET_KEYS is a JSON dictionary). Either bypasses RLS; never sent to browsers.
@@ -88,14 +89,24 @@ async function callModel(prompt: string): Promise<ModelReply> {
   };
 }
 
+function spellingPrompt(word: string, sentence: string) {
+  return `Fix only misspelled words in this English sentence: strings that are not real English words. Do not change grammar, word endings, word choice or word order, and never change "${word}". If nothing is misspelled, return the sentence unchanged.
+
+Sentence: """${sentence}"""
+
+Reply with only JSON: {"fixed":"..."}`;
+}
+
 function buildPrompt(word: string, meaning: string, sentence: string) {
   return `You are grading one sentence written by a Chinese learner of spoken English. The learner was asked to make up their own sentence using a target word.
 
 Target word: "${word}" (meaning: ${meaning})
 Learner's sentence: """${sentence}"""
 
+First, silently fix any misspelled word other than the target word (for example read "beautful" as "beautiful") and grade that fixed sentence; those typos alone never make it bad.
+
 Decide:
-- "good" whenever the target word (any inflected form) is used with a meaning it really has and the sentence is understandable and basically grammatical. Be lenient: figurative, creative, formal or casual uses all pass, and so does anything a fluent speaker could plausibly say or write (quotes from real speeches count). Never fail a sentence only because another wording is more common or for style preferences. Simple sentences pass. A small typo in a word other than the target word does not make it bad; praise may point it out by quoting that word.
+- "good" whenever the target word (any inflected form) is used with a meaning it really has and the sentence is understandable and basically grammatical. Be lenient: figurative, creative, formal or casual uses all pass, and so does anything a fluent speaker could plausibly say or write (quotes from real speeches count). Never fail a sentence only because another wording is more common, because of style, or because you doubt whether the statement is true or logical; judge the English, not the opinion. Do not fail it by claiming the word is "usually" used for something else when this meaning is listed above. Simple sentences pass. If you fixed a typo and the sentence is otherwise fine, answer "good" and let praise point out the misspelled word by quoting it.
 - "bad" only for a clear problem: the target word is missing or misspelled, it is used with a meaning it does not have, or there is a mistake a native speaker would call wrong (not just unusual). When unsure, choose "good".
 
 Feedback rules:
@@ -138,8 +149,27 @@ Deno.serve(async (req) => {
   if (status.ip_today >= IP_DAILY_LIMIT) return json({ code: "daily_limit", limit: DAILY_LIMIT }, 429);
   if (Number(status.month_cost) >= MONTHLY_BUDGET_CNY) return json({ code: "budget" }, 503);
 
+  const logUsage = (reply: ModelReply, counted: boolean) => admin.from("ai_usage").insert({
+    user_id: user.id,
+    ip_hash: iph,
+    prompt_tokens: reply.promptTokens,
+    completion_tokens: reply.completionTokens,
+    cost_cny: (reply.promptTokens * PRICE_IN + reply.completionTokens * PRICE_OUT) / 1e6,
+    counted,
+    prompt_version: PROMPT_VERSION,
+  });
+
+  // spelling pre-pass (see applySpellingFixes); if it fails, grade the sentence as written
+  let graded = sentence, typos: string[] = [];
+  try {
+    const sp = await callModel(spellingPrompt(word, sentence));
+    await logUsage(sp, false);
+    const fixed = (extractJson(sp.content) as { fixed?: unknown } | null)?.fixed;
+    if (sp.finish !== "length" && typeof fixed === "string") ({ sentence: graded, typos } = applySpellingFixes(sentence, fixed, word));
+  } catch { /* grade as written */ }
+
   // ask the model: at most two calls (one retry for a transient failure or an unusable reply)
-  const prompt = buildPrompt(word, meaning, sentence);
+  const prompt = buildPrompt(word, meaning, graded);
   let result: Judgement | null = null;
   let lastError = "invalid_json";
   for (let attempt = 0; attempt < 2 && !result; attempt++) {
@@ -155,18 +185,15 @@ Deno.serve(async (req) => {
     result = parseReply(reply.content, reply.finish);
     if (!result) lastError = "invalid_json";
     // feedback that uses grammar jargon or gives the answer: ask once more, then drop those notes
-    else if (!followsRules(result, sentence)) result = attempt === 0 ? null : sanitize(result, sentence);
+    else if (!followsRules(result, graded)) result = attempt === 0 ? null : sanitize(result, graded);
     // the call cost money either way; only a judgement the learner receives counts toward quotas
-    await admin.from("ai_usage").insert({
-      user_id: user.id,
-      ip_hash: iph,
-      prompt_tokens: reply.promptTokens,
-      completion_tokens: reply.completionTokens,
-      cost_cny: (reply.promptTokens * PRICE_IN + reply.completionTokens * PRICE_OUT) / 1e6,
-      counted: !!result,
-      prompt_version: PROMPT_VERSION,
-    });
+    await logUsage(reply, !!result);
   }
   if (!result) return json({ code: lastError }, 502);
+  if (typos.length) {
+    const note = `${typos.map((t) => `'${t}'`).join("、")} 拼错了，再检查一下拼写。`;
+    if (result.verdict === "good") result.praise = `${result.praise} 小提示：${note}`.trim();
+    else result.issues = [...result.issues.slice(0, 3), { type: "usage", note }];
+  }
   return json({ ...result, remaining: Math.max(0, DAILY_LIMIT - status.today_count - 1) });
 });

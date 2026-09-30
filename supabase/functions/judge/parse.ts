@@ -69,6 +69,52 @@ export function sanitize(j: Judgement, sentence: string): Judgement {
   return { ...j, issues, usage: GRAMMAR_TERMS.test(j.usage) ? "" : j.usage };
 }
 
+// Spelling pre-pass. A typo like "fureture" makes a small model reject a sentence for made-up
+// reasons, so the server first asks for spelling fixes and grades the fixed sentence. The model
+// may also "fix" grammar (have → has, issue → issues), which would let a wrong sentence pass, so a
+// change is kept only when it looks like a typo: same number of words, small edit, not a word
+// growing an ending, not a common little word, and never the target word.
+const COMMON = new Set(("a an the this that these those it its is are was were be been am have has had do does did " +
+  "go goes went he she him her his they them their there we us our you your i me my to too of off in on at " +
+  "for from by with as than then no not now know new few").split(" "));
+
+function editDistance(a: string, b: string): number {
+  const d = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = d[0];
+    d[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const tmp = d[j];
+      d[j] = Math.min(d[j] + 1, d[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = tmp;
+    }
+  }
+  return d[b.length];
+}
+
+export function looksLikeTypo(wrong: string, right: string, target: string): boolean {
+  const w = wrong.toLowerCase(), r = right.toLowerCase(), t = target.toLowerCase();
+  if (w === r || w.startsWith(t) || r.startsWith(t)) return false;
+  if (COMMON.has(w) || COMMON.has(r) || w.startsWith(r) || r.startsWith(w)) return false;
+  return editDistance(w, r) <= (r.length >= 7 ? 3 : 2);
+}
+
+// Returns the sentence with only the accepted typo fixes applied, and the misspelled words.
+export function applySpellingFixes(original: string, fixed: string, target: string): { sentence: string; typos: string[] } {
+  const WORD = /[A-Za-z]+(?:'[A-Za-z]+)?/g;
+  const a = [...original.matchAll(WORD)], b = [...String(fixed ?? "").matchAll(WORD)];
+  if (!b.length || a.length !== b.length) return { sentence: original, typos: [] };
+  let out = "", at = 0;
+  const typos: string[] = [];
+  a.forEach((m, i) => {
+    if (!looksLikeTypo(m[0], b[i][0], target)) return;
+    out += original.slice(at, m.index) + b[i][0];
+    at = m.index! + m[0].length;
+    typos.push(m[0]);
+  });
+  return { sentence: out + original.slice(at), typos };
+}
+
 // finish_reason "length" means the reply was cut off, so even parseable JSON is incomplete.
 export function parseReply(content: string, finishReason: string | null | undefined): Judgement | null {
   if (finishReason === "length") return null;

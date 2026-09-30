@@ -1,7 +1,7 @@
 // Run: node --test supabase/functions/judge/parse.test.ts   (Node 22.6+ strips the types)
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseReply, followsRules, sanitize, ruleBreaks } from "./parse.ts";
+import { parseReply, followsRules, sanitize, ruleBreaks, applySpellingFixes } from "./parse.ts";
 
 const good = '{"verdict":"good","issues":[],"praise":"很自然","usage":"常用来描述问题出现：an issue arises"}';
 
@@ -82,4 +82,16 @@ test("sanitize drops offending notes and keeps a bad verdict explained", () => {
   assert.equal(s.issues.length, 1);
   assert.ok(!/宾语|才是|动词/.test(s.issues[0].note));
   assert.equal(s.usage, realBad.usage);
+});
+
+test("spelling fixes: typos are fixed, grammar fixes and the target word are not", () => {
+  const s = "CMU is a rare place that invents the fureture.";
+  assert.deepEqual(applySpellingFixes(s, "CMU is a rare place that invents the future.", "rare"),
+    { sentence: "CMU is a rare place that invents the future.", typos: ["fureture"] });
+  const g = "He have many issue with his boss.";
+  assert.deepEqual(applySpellingFixes(g, "He has many issues with his boss.", "issue"), { sentence: g, typos: [] });
+  const t = "It is a rair bird.";
+  assert.deepEqual(applySpellingFixes(t, "It is a rare bird.", "rare"), { sentence: t, typos: [] });
+  assert.deepEqual(applySpellingFixes(s, "CMU invents the future.", "rare"), { sentence: s, typos: [] }); // rewritten
+  assert.deepEqual(applySpellingFixes("I walk home.", "I walked home.", "home"), { sentence: "I walk home.", typos: [] });
 });
