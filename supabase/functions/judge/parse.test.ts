@@ -100,6 +100,8 @@ test("word diff: typos, wrong forms, missing and extra words", () => {
   const d6 = diffWords("It is a rair bird.", "It is a rare bird.", "rare");
   assert.deepEqual(d6.spots, [{ word: "rair", kind: "wrong" }]); // the target word itself is never just a typo
   assert.equal(diffWords("We need to discuss this issue.", "We need to discuss this issue.", "issue").changed, 0);
+  assert.deepEqual(diffWords("I focus on my study.", "I focus on my studies.", "focus").typos, []); // a word form, not a typo
+  assert.deepEqual(diffWords("See you tomorow.", "See you tomorrow.", "see").typos, ["tomorow"]);
 });
 
 test("sanitize keeps where the problem is when every note broke the rules", () => {

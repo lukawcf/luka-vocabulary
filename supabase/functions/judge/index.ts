@@ -39,7 +39,7 @@ const PRICE_IN = Number(env("PRICE_IN_PER_M_CNY", "0.8"));
 const PRICE_OUT = Number(env("PRICE_OUT_PER_M_CNY", "2"));
 const BASE_URL = env("AI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/+$/, "");
 const MODEL = env("AI_MODEL", "qwen-plus");
-const PROMPT_VERSION = "judge-v12";
+const PROMPT_VERSION = "judge-v13";
 
 // Server-side key: the legacy service role key, or the first of the newer secret keys
 // (SUPABASE_SECRET_KEYS is a JSON dictionary). Either bypasses RLS; never sent to browsers.
@@ -92,7 +92,7 @@ async function callModel(prompt: string): Promise<ModelReply> {
 }
 
 function correctionPrompt(word: string, sentence: string) {
-  return `Correct this sentence written by an English learner, changing as little as possible: fix spelling and clear grammar mistakes only (wrong word forms, missing or extra small words). Do not change word choice, style or meaning, do not make it sound more natural, and keep the word "${word}" (only its form may change if the grammar needs it). If it is already correct, return it unchanged.
+  return `Correct this sentence written by an English learner, changing as little as possible: fix spelling and clear grammar mistakes only (wrong word forms, missing or extra small words). Do not change word choice, style or meaning, do not make it sound more natural, and keep the word "${word}" (only its form may change if the grammar needs it). Leave anything that is already acceptable English alone, even if another wording or form is also possible (for example "my study" is fine). If it is already correct, return it unchanged.
 
 Sentence: """${sentence}"""
 

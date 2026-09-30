@@ -110,6 +110,10 @@ export function looksLikeTypo(wrong: string, right: string, target: string): boo
   const w = wrong.toLowerCase(), r = right.toLowerCase(), t = target.toLowerCase();
   if (w === r || w.startsWith(t) || r.startsWith(t)) return false;
   if (COMMON.has(w) || COMMON.has(r) || w.startsWith(r) || r.startsWith(w)) return false;
+  // same stem with a different ending (study → studies, make → making) is a word form, not a typo
+  let k = 0;
+  while (k < w.length && k < r.length && w[k] === r[k]) k++;
+  if (w.length !== r.length && k >= Math.min(w.length, r.length) - 1) return false;
   return editDistance(w, r) <= (r.length >= 7 ? 3 : 2);
 }
 
