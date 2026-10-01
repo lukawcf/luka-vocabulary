@@ -21,7 +21,7 @@
 // Optional: AI_MODEL (qwen-plus), DAILY_LIMIT (60), IP_DAILY_LIMIT (180), MONTHLY_BUDGET_CNY (150),
 //           PRICE_IN_PER_M_CNY / PRICE_OUT_PER_M_CNY (yuan per million tokens; check the console's price list)
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { parseReply, followsRules, sanitize, diffWords, spotNote, ruleBreaks, extractJson, type WordDiff, type Judgement } from "./parse.ts";
+import { parseReply, followsRules, sanitize, diffWords, spotNote, extractJson, type WordDiff, type Judgement } from "./parse.ts";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -39,7 +39,7 @@ const PRICE_IN = Number(env("PRICE_IN_PER_M_CNY", "0.8"));
 const PRICE_OUT = Number(env("PRICE_OUT_PER_M_CNY", "2"));
 const BASE_URL = env("AI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/+$/, "");
 const MODEL = env("AI_MODEL", "qwen-plus");
-const PROMPT_VERSION = "judge-v14";
+const PROMPT_VERSION = "judge-v15";
 
 // Server-side key: the legacy service role key, or the first of the newer secret keys
 // (SUPABASE_SECRET_KEYS is a JSON dictionary). Either bypasses RLS; never sent to browsers.
@@ -229,21 +229,6 @@ Deno.serve(async (req) => {
     // the call cost money either way; only a judgement the learner receives counts toward quotas
     await logUsage(reply, !!result);
   }
-  // feedback that uses grammar jargon or gives the answer: have it rewritten for this sentence;
-  // anything still breaking the rules after that is dropped (sanitize keeps where the problem is)
-  if (result && !followsRules(result, sentence)) {
-    try {
-      const rw = await callModel(rewritePrompt(word, sentence, result));
-      await logUsage(rw, false);
-      const notes = (extractJson(rw.content) as { notes?: unknown } | null)?.notes;
-      if (rw.finish !== "length" && Array.isArray(notes) && notes.length) {
-        const types = result.issues.map((x) => x.type);
-        result.issues = notes.slice(0, 4).map((n, i) => ({ type: types[i] ?? "usage", note: String(n ?? "").trim().slice(0, 200) }))
-          .filter((x) => x.note);
-      }
-    } catch { /* fall through to sanitize */ }
-    if (!followsRules(result, sentence)) result = sanitize(result, sentence);
-  }
   if (!result) return json({ code: lastError }, 502);
   // mistakes found by the correction pass: the sentence is bad, with one hint per spot
   if (diff.spots.length) {
@@ -255,19 +240,33 @@ Deno.serve(async (req) => {
       const items = (extractJson(h.content) as { spots?: unknown } | null)?.spots;
       if (h.finish !== "length" && Array.isArray(items) && items.length === diff.spots.length) checks = items;
     } catch { /* keep every spot, with spotNote */ }
-    const ok = (n: string) => !!n && !ruleBreaks(n, sentence);
     const slips = diff.spots
       .map((x, i) => ({ x, c: checks[i] ?? {} }))
       .filter(({ c }) => c.wrong !== false)
       .slice(0, 3)
       .map(({ x, c }) => {
         const note = String(c.note ?? "").trim().slice(0, 200);
-        return { type: "grammar", note: ok(note) ? note : spotNote(x) };
+        return { type: "grammar", note: note || spotNote(x) };
       });
     if (slips.length) {
       const wordNotes = result.verdict === "bad" ? result.issues : [];
       result = { ...result, verdict: "bad", praise: "", issues: [...slips, ...wordNotes].slice(0, 4) };
     }
+  }
+  // feedback that uses grammar jargon or gives the answer: have it rewritten for this sentence;
+  // anything still breaking the rules after that is dropped (sanitize keeps where the problem is)
+  if (!followsRules(result, sentence)) {
+    try {
+      const rw = await callModel(rewritePrompt(word, sentence, result));
+      await logUsage(rw, false);
+      const notes = (extractJson(rw.content) as { notes?: unknown } | null)?.notes;
+      if (rw.finish !== "length" && Array.isArray(notes) && notes.length) {
+        const types = result.issues.map((x) => x.type);
+        result.issues = notes.slice(0, 4).map((n, i) => ({ type: types[i] ?? "usage", note: String(n ?? "").trim().slice(0, 200) }))
+          .filter((x) => x.note);
+      }
+    } catch { /* fall through to sanitize */ }
+    if (!followsRules(result, sentence)) result = sanitize(result, sentence);
   }
   if (diff.typos.length) {
     const typos = diff.typos;
