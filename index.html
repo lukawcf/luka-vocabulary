@@ -212,7 +212,7 @@ const MM_KEY = "luka_maimemo", MM_API = "https://open.maimemo.com/open/api/v1/me
 let MM = null;
 try{ MM = JSON.parse(localStorage.getItem(MM_KEY)||"null"); }catch(e){}
 const mmOn = () => !!MM?.token;
-let mmItems = null, mmState = "idle", mmError = "", mmDay = null;
+let mmItems = null, mmState = "idle", mmError = "", mmDay = null, mmProgress = null, mmNote = "";
 // what people paste: "Bearer xxx", quotes, spaces or line breaks around the token
 const mmClean = t => String(t||"").trim().replace(/^bearer\s+/i, "").replace(/^["'“”]+|["'“”]+$/g, "").trim();
 async function mmCall(path, body, token=MM?.token){
@@ -249,13 +249,18 @@ function mmOrder(items){
   const rank = i => (i.tries.length || i.draft) ? 0 : i.mmDone ? (i.forgot ? 1 : 2) : 3;
   return items.slice().sort((a,b)=>rank(a)-rank(b) || a.rnd-b.rnd);
 }
-async function mmRefresh(){
+async function mmRefresh(manual=false){
   if(!mmOn() || mmState==="loading") return;
+  if(manual){ mmNote = "正在刷新…"; if(canRerender()) render(); }
   const today = dayNum();
   if(mmDay !== today){ mmItems = null; mmDay = today; }
   if(!mmItems){ mmState = "loading"; if(canRerender()) render(); }
   try{
-    const [d] = await Promise.all([mmCall("study/get_today_items", {limit:1000}), loadDict()]);
+    const [d, p] = await Promise.all([mmCall("study/get_today_items", {limit:1000}),
+      mmCall("study/get_study_progress", {}).catch(()=>null), loadDict()]);
+    mmProgress = p?.progress || null;
+    const now = new Date();
+    mmNote = manual ? `已刷新（${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}）` : "";
     const prev = new Map((mmItems||[]).map(i=>[i.w, i]));
     mmItems = mmOrder((d?.today_items||[]).map(x=>{
       const w = x.voc_spelling, flowered = (S.cards[w]?.flowers||[]).some(f=>f.d===today);
@@ -264,7 +269,8 @@ async function mmRefresh(){
     }));
     mmState = "ready"; mmError = "";
   }catch(e){
-    if(e.code==="mm_wait"){ mmState = "idle"; return; }
+    if(e.code==="mm_wait"){ mmState = "idle"; mmNote = ""; return; }
+    mmNote = "";
     mmState = "error"; mmError = e.code || "mm_error";
   }
   if(canRerender()) render();
@@ -303,9 +309,10 @@ function mmSettingsHTML(){
   </div>`;
 }
 function mmEmptyHTML(){
-  const again = `<div class="row"><button class="btn" data-act="mmrefresh">刷新</button></div>`;
+  const prog = mmProgress ? `墨墨今天已背 ${mmProgress.finished} / ${mmProgress.total} 个单词。` : "";
+  const again = `<div class="row"><button class="btn" data-act="mmrefresh" ${mmNote==="正在刷新…"?"disabled":""}>刷新</button><span class="muted small">${esc(mmNote)}</span></div>`;
   const box = (mark, title, text, btn=again) => `<div class="panel" style="align-items:flex-start">
-    <div class="done-mark" aria-hidden="true">${mark}</div><h2>${title}</h2><p class="muted">${text}</p>${btn}</div>`;
+    <div class="done-mark" aria-hidden="true">${mark}</div><h2>${title}</h2><p class="muted">${text}</p>${prog && btn ? `<p class="muted small">${prog}</p>` : ""}${btn}</div>`;
   if(mmState==="idle" || mmState==="loading") return box("⏳", "正在读取墨墨今天的单词…", "", "");
   if(mmState==="error") return mmError==="mm_auth"
     ? box("🔑", "墨墨的 Token 失效了", "到「设置」里断开墨墨，再重新填一次 Token。", "")
@@ -377,10 +384,23 @@ function sayNote(msg){ const n = $("#sayState"); if(n) n.textContent = msg; }
 const player = new Audio();
 function playRecorded(word, b64, rate, quiet){
   try{
+    player.onerror = null;
     player.pause();
     player.src = audioUrl(word, b64);
     player.playbackRate = 1;
     player.play().catch(()=>tts(word, rate, quiet));
+  }catch(e){ tts(word, rate, quiet); }
+}
+// Words without a recording (most words that come from MaiMemo, and phrases) use Youdao's American
+// pronunciation, played through the same <audio> element; browser speech is the last resort.
+const ONLINE_AUDIO = w => "https://dict.youdao.com/dictvoice?type=2&audio=" + encodeURIComponent(w);
+function playOnline(word, rate, quiet){
+  try{
+    player.pause();
+    player.onerror = ()=>{ player.onerror = null; tts(word, rate, quiet); };
+    player.src = ONLINE_AUDIO(word);
+    player.playbackRate = 1;
+    player.play().catch(()=>{ player.onerror = null; tts(word, rate, quiet); });
   }catch(e){ tts(word, rate, quiet); }
 }
 // quiet: never show tips (automatic playback the browser may block)
@@ -391,16 +411,16 @@ function speak(text, rate=0.85, quiet=false){
     const k = audioBucket(word), pack = audioLoaded[k];
     if(pack){                       // cached: play inside the tap, which every browser allows
       if(pack[word]) return playRecorded(word, pack[word], rate, quiet);
-      return tts(text, rate, quiet);
+      return playOnline(word, rate, quiet);
     }
     if(!quiet) sayNote("正在加载发音…");
     loadPack(k).then(p=>{
       if(!quiet) sayNote("");
-      if(p[word]) playRecorded(word, p[word], rate, quiet); else tts(text, rate, quiet);
-    }).catch(()=>{ if(!quiet) sayNote(""); tts(text, rate, quiet); });
+      if(p[word]) playRecorded(word, p[word], rate, quiet); else playOnline(word, rate, quiet);
+    }).catch(()=>{ if(!quiet) sayNote(""); playOnline(word, rate, quiet); });
     return;
   }
-  tts(text, rate, quiet);
+  if(word) playOnline(word, rate, quiet); else tts(text, rate, quiet);
 }
 function tts(text, rate, quiet){
   const synth = window.speechSynthesis;
@@ -670,7 +690,7 @@ async function startSync(){
    - page older than the newest release (it stayed open during an update): offer a refresh
    - first visit after an update: show what changed since the version this browser last saw
    New learners start at the current version and see nothing. */
-const APP_VERSION = "2026.10.04-2";
+const APP_VERSION = "2026.10.04-3";
 const SEEN_KEY = "luka_seen_version";
 function showNotice(title, entries, button, act){
   const box = $("#notice");
@@ -1142,7 +1162,7 @@ $("#view").addEventListener("click", e=>{
     case "bindemail": bindEmail(); break;
     case "mmon": mmConnect(); break;
     case "mmoff": mmDisconnect(); break;
-    case "mmrefresh": mmRefresh(); break;
+    case "mmrefresh": mmRefresh(true); break;
     case "emaillogin": emailSignIn(); break;
     case "signout": signOutCloud(); break;
     case "back": view = "learn"; render(); break;

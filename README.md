@@ -96,7 +96,7 @@ node --test supabase/functions/judge/parse.test.ts
 
 ## 发音
 
-每个单词都有预先生成的美式发音录音，放在 `audio/a00.json` … `audio/a1f.json`（按单词哈希分成 32 组，每组 `{单词: base64 mp3}`）。录音用开源语音模型 [Kokoro](https://github.com/hexgrad/kokoro)（Apache-2.0，通过 [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx)）的美式男声 `am_michael` 生成。没有录音的单词才会用浏览器自带的朗读。
+每个单词都有预先生成的美式发音录音，放在 `audio/a00.json` … `audio/a1f.json`（按单词哈希分成 32 组，每组 `{单词: base64 mp3}`）。录音用开源语音模型 [Kokoro](https://github.com/hexgrad/kokoro)（Apache-2.0，通过 [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx)）的美式男声 `am_michael` 生成。没有录音的单词（例如墨墨里的其他单词和词组）用有道词典的在线美式发音，都不行时才用浏览器自带的朗读。
 
 ## 词库来源
 
