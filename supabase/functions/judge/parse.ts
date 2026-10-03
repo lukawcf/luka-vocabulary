@@ -45,20 +45,26 @@ export function toJudgement(value: unknown): Judgement | null {
   };
 }
 
-// Feedback rules the product promises: plain words, no grammar jargon, and never the answer.
-// Models do not always follow the prompt, so the server checks. A note breaks the rules when it
-// uses a grammar term, says what the right wording is, or quotes English that is not in the
-// learner's own sentence (that would be handing them replacement words).
+// Feedback rules the product promises: plain words, no grammar jargon, and no answers except for
+// small linking words. Models do not always follow the prompt, so the server checks. A note breaks
+// the rules when it uses a grammar term, or contains an English word that is neither in the
+// learner's own sentence nor a small linking word (that would be handing them the answer).
 const GRAMMAR_TERMS = /主语|谓语|宾语|表语|定语|状语|补语|及物|不及物|词性|从句|时态|语法成分|语序|动词|名词|形容词|副词|介词|冠词|代词|连词|单数|复数|第三人称|过去式|过去分词|现在分词|被动语态|主动语态|不定式|动名词|可数|不可数/;
-const GIVES_ANSWER = /才是|应该改成|应改为|改成|改为|换成|正确的(说法|写法|是)|应该说|应该用|可以说成/;
 const QUOTED = /'([^']+)'|‘([^’]+)’|"([^"]+)"|“([^”]+)”/g;
+export const SMALL_WORDS = new Set(("a an the and but or so because if when while than that which who whom whose what where " +
+  "in on at to of for with from by about into onto over under after before since until as it its there this these those").split(" "));
+const englishWords = (s: string) => (s.toLowerCase().match(/[a-z]+(?:'[a-z]+)?/g) ?? []);
 
 export function ruleBreaks(note: string, sentence: string): boolean {
-  if (GRAMMAR_TERMS.test(note) || GIVES_ANSWER.test(note)) return true;
-  const own = sentence.toLowerCase();
+  if (GRAMMAR_TERMS.test(note)) return true;
+  const own = new Set(englishWords(sentence));
+  if (englishWords(note).some((w) => !own.has(w) && !SMALL_WORDS.has(w))) return true;
+  // a quoted phrase made of the learner's own words in a new order is an answer too
+  // (small linking words in it are ignored, since those may be given)
+  const text = " " + englishWords(sentence).join(" ") + " ";
   for (const m of note.matchAll(QUOTED)) {
-    const q = (m[1] ?? m[2] ?? m[3] ?? m[4] ?? "").trim().toLowerCase();
-    if (/[a-z]/.test(q) && !own.includes(q)) return true;
+    const plain = englishWords(m[1] ?? m[2] ?? m[3] ?? m[4] ?? "").filter((w) => !SMALL_WORDS.has(w));
+    if (plain.length > 1 && !text.includes(" " + plain.join(" ") + " ")) return true;
   }
   return false;
 }
@@ -117,7 +123,7 @@ export function looksLikeTypo(wrong: string, right: string, target: string): boo
   return editDistance(w, r) <= (r.length >= 7 ? 3 : 2);
 }
 
-export type Spot = { word: string; kind: "wrong" | "missing" | "extra" };
+export type Spot = { word: string; kind: "wrong" | "missing" | "extra"; fix: string[] };
 export type WordDiff = { typos: string[]; spots: Spot[]; changed: number; total: number };
 
 const WORD = /[A-Za-z]+(?:'[A-Za-z]+)?/g;
@@ -143,15 +149,20 @@ export function diffWords(original: string, fixed: string, target: string): Word
     const gone = a.slice(i0, i), added = b.slice(j0, j);
     out.changed += Math.max(gone.length, added.length);
     if (gone.length === 1 && added.length === 1 && looksLikeTypo(gone[0], added[0], target)) out.typos.push(gone[0]);
-    else if (gone.length) out.spots.push({ word: gone.join(" "), kind: added.length ? "wrong" : "extra" });
-    else out.spots.push({ word: a[i0 - 1] ?? a[i0] ?? "", kind: "missing" });
+    else if (gone.length) out.spots.push({ word: gone.join(" "), kind: added.length ? "wrong" : "extra", fix: added });
+    else out.spots.push({ word: a[i0 - 1] ?? a[i0] ?? "", kind: "missing", fix: added });
   }
   out.spots = out.spots.filter((x) => x.word);
   return out;
 }
 
-// Used when no rule-following hint could be written for a spot.
+// Used when no rule-following hint could be written for a spot. Small linking words get the answer.
 export function spotNote(x: Spot): string {
+  const small = (ws: string[]) => ws.length > 0 && ws.every((w) => SMALL_WORDS.has(w.toLowerCase()));
+  const fix = x.fix.map((w) => w.toLowerCase()).join(" ");
+  if (x.kind === "missing" && small(x.fix)) return `'${x.word}' 后面少了 '${fix}'。`;
+  if (x.kind === "extra" && small(x.word.split(" "))) return `'${x.word}' 这里多余，去掉它。`;
+  if (x.kind === "wrong" && small(x.word.split(" ")) && small(x.fix)) return `'${x.word}' 这里要用 '${fix}'。`;
   if (x.kind === "missing") return `'${x.word}' 附近少了一点东西，读一读，想想这里还缺什么。`;
   if (x.kind === "extra") return `'${x.word}' 这里好像多了点什么，读一读，想想去掉会不会更顺。`;
   return `'${x.word}' 这里不太对，再读一遍这一处，想想哪里要变一变。`;

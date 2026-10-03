@@ -164,11 +164,18 @@ function ensurePlan(){
   if(S.plan && S.plan.day === today) return;
   const due = Object.values(S.cards).filter(c=>c.due<=today).sort((a,b)=>a.due-b.due || a.ease-b.ease).slice(0, REVIEW_PER_DAY);
   const fresh = S.bank.filter(x=>!S.cards[x.w]).slice(0, NEW_PER_DAY);
-  S.plan = {day:today, items:[
+  // reviews and new words are mixed in random order, not one block after the other
+  S.plan = {day:today, mixed:true, items:shuffled([
     ...due.map(c=>({w:c.w, kind:"review", poops:0, peeked:false, done:false, tries:[]})),
     ...fresh.map(x=>({w:x.w, kind:"new", poops:0, peeked:false, done:false, tries:[]}))
-  ]};
+  ])};
   save();
+}
+// a plan made before mixing was added: shuffle what is still to do
+function mixPlan(){
+  if(!S.plan || S.plan.mixed) return;
+  const done = S.plan.items.filter(i=>i.done), todo = S.plan.items.filter(i=>!i.done);
+  S.plan.items = [...done, ...shuffled(todo)]; S.plan.mixed = true; save();
 }
 function ensureBonus(){
   const k = hourKey();
@@ -181,7 +188,7 @@ function ensureBonus(){
   save();
 }
 function current(){
-  ensurePlan();
+  ensurePlan(); mixPlan();
   const p = S.plan.items.find(i=>!i.done);
   if(p) return {item:p, list:"plan"};
   ensureBonus();
@@ -350,8 +357,6 @@ function syncAi(){
   if(s && !busy){
     if(!aiReady()) s.textContent = cloudOn ? "正在连接…" : "先在「设置」里配置 AI";
     else if(s.textContent === "正在连接…") s.textContent = "";
-    if(aiReady() && !ownKeyReady() && lastRemaining !== null && lastRemaining <= 10 && !s.textContent)
-      s.textContent = `今天还能免费判断 ${lastRemaining} 次`;
   }
   if(b) b.disabled = busy || !aiReady();
 }
@@ -385,9 +390,9 @@ Decide:
 
 Feedback rules:
 - Every note in Simplified Chinese, short and specific.
-- Say WHERE the problem is by quoting the learner's own words, and in plain everyday Chinese say what is missing or wrong there (e.g. "'may' 后面少了一个动作", "'information' 前面少了一个词"). When a word has the wrong form, say so in everyday words and hint at why without naming the fix: "'invent' 这个词的样子不对，看看前面说的是一个东西还是好几个", "'go' 说的是昨天的事，这个词的样子要跟着变". Do NOT use grammar terms such as 主语、谓语、宾语、及物、不及物、词性、从句、时态、语法成分. NEVER write the corrected sentence and never give the replacement words. A hint question is fine.
+- Say WHERE the problem is by quoting the learner's own words, and in plain everyday Chinese say what is missing or wrong there (e.g. "'may' 后面少了一个动作", "'information' 前面少了一个词"). When a word has the wrong form, say so in everyday words and hint at why without naming the fix: "'invent' 这个词的样子不对，看看前面说的是一个东西还是好几个", "'go' 说的是昨天的事，这个词的样子要跟着变". Do NOT use grammar terms such as 主语、谓语、宾语、及物、不及物、词性、从句、时态、语法成分. Be specific: name the exact word, what is wrong there and why. For small linking words (a, an, the, and, but, or, so, because, if, than, that, which, who, in, on, at, to, of, for, with, from, by, about, it, there and the like) say directly which word to add, remove or use, e.g. "'interested' 后面要加 'in'", "'because' 和 'so' 只留一个". For any other word, do not give the replacement; say how it should change. NEVER write the whole corrected sentence.
 - For "good": issues is [] and praise is one short encouraging Chinese sentence. For "bad": praise is "".
-- Always fill "usage" (both verdicts), in plain everyday Simplified Chinese, at most 2 short sentences: what this word is usually used to describe (what kind of thing or situation), plus 2-3 common English collocations (short phrases like "an issue arises", never a full example sentence and never a fix for the learner's sentence). No grammar terms (same list as above).
+- Always fill "usage" (both verdicts) with only the suggested fixed collocations and how the word is used, in plain everyday Simplified Chinese: one short sentence on what it usually describes, then 2-3 common English collocations (short phrases like "an issue arises"). Never a full example sentence, never a comment on the learner's sentence. No grammar terms (same list as above).
 
 Reply with only JSON: {"verdict":"good"|"bad","issues":[{"type":"grammar"|"naturalness"|"usage","note":"..."}],"praise":"...","usage":"..."}`;
   const r = parseJSON(await chat(prompt));
@@ -409,7 +414,7 @@ Reply with only JSON: {"verdict":"good"|"bad","issues":[{"type":"grammar"|"natur
 const CFG = window.LUKA_CONFIG || {};
 const cloudOn = !!(CFG.supabaseUrl && CFG.supabaseAnonKey && window.supabase);
 const sb = cloudOn ? window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseAnonKey) : null;
-let session = null, lastRemaining = null;
+let session = null;
 function aiReady(){ return ownKeyReady() || (cloudOn && !!session); }
 function setSync(msg){ const s = $("#sync"); if(s) s.textContent = msg; }
 function localSave(){ try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} }
@@ -445,7 +450,6 @@ async function cloudJudge(word, meaning, sentence){
     try{ const b = await error.context?.json(); code = b?.code || code; }catch(e){}
     throw {code};
   }
-  lastRemaining = typeof data.remaining === "number" ? data.remaining : null;
   return {verdict:data.verdict, issues:data.issues||[], praise:data.praise||"", usage:data.usage||""};
 }
 
@@ -534,7 +538,7 @@ async function startSync(){
    - page older than the newest release (it stayed open during an update): offer a refresh
    - first visit after an update: show what changed since the version this browser last saw
    New learners start at the current version and see nothing. */
-const APP_VERSION = "2026.10.01";
+const APP_VERSION = "2026.10.03";
 const SEEN_KEY = "luka_seen_version";
 function showNotice(title, entries, button, act){
   const box = $("#notice");
@@ -606,7 +610,7 @@ async function emailSignIn(){
 }
 async function signOutCloud(){
   await sb.auth.signOut();
-  S = freshState(); localSave(); lastRemaining = null;
+  S = freshState(); localSave();
   await signInAnon();
   view = "learn"; render();
 }
@@ -747,11 +751,13 @@ async function toggleMic(){
   try{ r.start(); rec = r; setMicUi(true); }catch(e){ micBlocked = true; showTip(); }
 }
 
-/* Meaning stays hidden until the learner taps 看中文. What is on screen is not saved
-   (a refresh hides it again); that they looked is saved in item.level for scheduling. */
+/* Meaning stays hidden until the learner taps 看中文, for new words, reviews and second passes alike.
+   It is tied to this one appearance of the word (not the word itself), so a second pass or a later
+   review starts hidden again. What is on screen is not saved (a refresh hides it again); that they
+   looked is saved in item.level for scheduling. */
 let revealed = null;
 function meaningHTML(item, meaning){
-  if(revealed === item.w) return `<p class="meaning">${esc(meaning)}</p>`;
+  if(revealed === item) return `<p class="meaning">${esc(meaning)}</p>`;
   return `<div class="row"><button class="btn" data-act="show">看中文</button></div>`;
 }
 function verdictHTML(t){
@@ -949,15 +955,16 @@ function finishItem(cur, sentence){
   card.u = Date.now();
   item.done = true;
 }
-/* New words are practised twice: after the first flower the word comes back three words later,
+/* New words are practised twice: after the first flower the word comes back 3 to 7 words later (at random),
    showing the first sentence and asking for a new one. It is scheduled only after the second
    pass, with the struggles of both passes counted. */
 function queueSecondPass(item){
   const items = S.plan.items, at = items.indexOf(item);
   const second = {w:item.w, kind:"new", round:2, prevPoops:item.poops, prevLevel:item.level||0,
                   poops:0, level:0, done:false, tries:[]};
+  const gap = 3 + Math.floor(Math.random()*5);
   let pos = items.length, seen = 0;
-  for(let i=at+1;i<items.length;i++){ if(!items[i].done && ++seen===3){ pos = i+1; break; } }
+  for(let i=at+1;i<items.length;i++){ if(!items[i].done && ++seen===gap){ pos = i+1; break; } }
   items.splice(pos, 0, second);
 }
 // the finished word stays on screen with its flower until the learner taps 下一个单词
@@ -987,7 +994,7 @@ $("#view").addEventListener("click", e=>{
   const cur = current();
   switch(b.dataset.act){
     case "say": if(cur) speak(cur.item.w); break;
-    case "show": if(cur){ cur.item.level = 2; revealed = cur.item.w; save(); render(); $("#sent")?.focus(); } break;
+    case "show": if(cur){ cur.item.level = 2; revealed = cur.item; save(); render(); $("#sent")?.focus(); } break;
     case "submit": submit(); break;
     case "mic": toggleMic(); break;
     case "aitest": testAI(); break;

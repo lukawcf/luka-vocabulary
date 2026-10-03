@@ -4,7 +4,7 @@
 // a word; the model API key never leaves the server. Before calling the model it enforces:
 //   - a user id (Supabase JWT; anonymous sign-ins count, so visitors need no account)
 //   - input sizes (word, meaning, sentence)
-//   - DAILY_LIMIT judgements per user and IP_DAILY_LIMIT per IP per UTC day
+//   - optional DAILY_LIMIT per user and IP_DAILY_LIMIT per IP per UTC day (unset or 0: unlimited)
 //   - MONTHLY_BUDGET_CNY across all users per UTC month (then AI judging pauses for everyone)
 // A correction pass runs first: typos are only pointed out, other slips fail the sentence with a
 // hint at that spot, and the corrected sentence is graded for how the target word is used. A reply
@@ -18,7 +18,7 @@
 //   AI_BASE_URL   https://dashscope.aliyuncs.com/compatible-mode/v1        (China site)
 //                 https://dashscope-intl.aliyuncs.com/compatible-mode/v1   (international site)
 //   IP_SALT       any random string, keeps stored IP hashes unguessable
-// Optional: AI_MODEL (qwen-plus), DAILY_LIMIT (60), IP_DAILY_LIMIT (180), MONTHLY_BUDGET_CNY (150),
+// Optional: AI_MODEL (qwen-plus), DAILY_LIMIT / IP_DAILY_LIMIT (0 = unlimited), MONTHLY_BUDGET_CNY (150),
 //           PRICE_IN_PER_M_CNY / PRICE_OUT_PER_M_CNY (yuan per million tokens; check the console's price list)
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { parseReply, followsRules, sanitize, diffWords, spotNote, extractJson, type WordDiff, type Judgement } from "./parse.ts";
@@ -32,14 +32,14 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...cors, "Content-Type": "application/json" } });
 
 const env = (k: string, d = "") => Deno.env.get(k) ?? d;
-const DAILY_LIMIT = Number(env("DAILY_LIMIT", "60"));
-const IP_DAILY_LIMIT = Number(env("IP_DAILY_LIMIT", "180"));
+const DAILY_LIMIT = Number(env("DAILY_LIMIT", "0"));
+const IP_DAILY_LIMIT = Number(env("IP_DAILY_LIMIT", "0"));
 const MONTHLY_BUDGET_CNY = Number(env("MONTHLY_BUDGET_CNY", "150"));
 const PRICE_IN = Number(env("PRICE_IN_PER_M_CNY", "0.8"));
 const PRICE_OUT = Number(env("PRICE_OUT_PER_M_CNY", "2"));
 const BASE_URL = env("AI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/+$/, "");
 const MODEL = env("AI_MODEL", "qwen-plus");
-const PROMPT_VERSION = "judge-v15";
+const PROMPT_VERSION = "judge-v16";
 
 // Server-side key: the legacy service role key, or the first of the newer secret keys
 // (SUPABASE_SECRET_KEYS is a JSON dictionary). Either bypasses RLS; never sent to browsers.
@@ -100,9 +100,10 @@ Reply with only JSON: {"fixed":"..."}`;
 }
 
 // How every note must be written; shared by the grading prompt and the rewrite prompt.
-const NOTE_RULES = `- Say WHERE the problem is by quoting the learner's own words, and in plain everyday Chinese say what is missing or wrong there (e.g. "'may' 后面少了一个动作", "'information' 前面少了一个词", "'arise' 后面接的东西不对，想想它通常描述什么自己出现"). When a word has the wrong form, say so in everyday words and hint at why without naming the fix: "'invent' 这个词的样子不对，看看前面说的是一个东西还是好几个", "'go' 说的是昨天的事，这个词的样子要跟着变".
-- Only quote words that appear in the learner's sentence. Never write any English the learner did not write, never write the correct wording (not even part of it), and never say what it "should be" (no "才是", "应该改成", "换成").
-- Use everyday words only. Do NOT use any grammar term: 主语、谓语、宾语、表语、定语、状语、及物、不及物、词性、动词、名词、形容词、副词、介词、冠词、从句、时态、语序、单复数、语法成分.
+const NOTE_RULES = `- Be specific: say WHERE the problem is by quoting the learner's own words, what is wrong there and why, in plain everyday Chinese (e.g. "'may' 后面少了一个动作", "'arise' 后面接的东西不对，它说的是问题自己出现，不能带别的东西").
+- Small linking words (a, an, the, and, but, or, so, because, if, than, that, which, who, in, on, at, to, of, for, with, from, by, about, it, there and the like) may be given directly: say which one to add, remove or use (e.g. "'interested' 后面要加 'in'", "'is' 后面少了 'a'", "'because' 和 'so' 只留一个").
+- For any other word, do not write the right word; say how it should change instead (e.g. "'invent' 这个词的样子不对，前面说的是一个地方，词尾要变", "'go' 说的是昨天的事，这个词要换成过去的样子"). Never write the whole corrected sentence.
+- Use everyday words only. Do NOT use any grammar term: 主语、谓语、宾语、表语、定语、状语、及物、不及物、词性、动词、名词、形容词、副词、介词、冠词、连词、从句、时态、语序、单复数、可数、不可数、语法成分.
 - A hint question is fine.`;
 
 // Grammar and spelling are handled by the correction pass, so this asks one narrow question about
@@ -121,7 +122,7 @@ If false, write "note" for the learner:
 - Every note in Simplified Chinese, short and specific.
 ${NOTE_RULES}
 If true, "praise" is one short encouraging Chinese sentence; otherwise "".
-Always fill "usage", in plain everyday Simplified Chinese, at most 2 short sentences: what this word is usually used to describe (what kind of thing or situation), plus 2-3 common English collocations (short phrases like "an issue arises", never a full example sentence and never a fix for the learner's sentence). No grammar terms.
+Always fill "usage" with only the suggested fixed collocations and how the word is used, in plain everyday Simplified Chinese: one short sentence on what it usually describes, then 2-3 common English collocations (short phrases like "an issue arises"). Never a full example sentence, never a comment on the learner's sentence. No grammar terms.
 
 Reply with only JSON: {"fits":true|false,"note":"...","praise":"...","usage":"..."}`;
 }
@@ -151,7 +152,7 @@ A teacher's corrected version, which the learner must NOT see (never reveal it o
 
 For each of these places, in this order: ${where}
 1. "wrong": is the learner's own wording there really a mistake that an English teacher would mark? Answer false if it is acceptable English as written, even if the corrected version is also possible or more common (for example "my study" is fine).
-2. "note": only when wrong is true, one short hint that says what is wrong at that place without giving the answer, following these rules:
+2. "note": only when wrong is true, one short specific note about that place, following these rules:
 - Every note in Simplified Chinese, short and specific.
 ${NOTE_RULES}
 
@@ -182,8 +183,8 @@ Deno.serve(async (req) => {
   const { data: st, error: stErr } = await admin.rpc("usage_status", { uid: user.id, iph }).single();
   if (stErr || !st) return json({ code: "server" }, 500);
   const status = st as { today_count: number; ip_today: number; month_cost: number };
-  if (status.today_count >= DAILY_LIMIT) return json({ code: "daily_limit", limit: DAILY_LIMIT }, 429);
-  if (status.ip_today >= IP_DAILY_LIMIT) return json({ code: "daily_limit", limit: DAILY_LIMIT }, 429);
+  if (DAILY_LIMIT > 0 && status.today_count >= DAILY_LIMIT) return json({ code: "daily_limit", limit: DAILY_LIMIT }, 429);
+  if (IP_DAILY_LIMIT > 0 && status.ip_today >= IP_DAILY_LIMIT) return json({ code: "daily_limit", limit: DAILY_LIMIT }, 429);
   if (Number(status.month_cost) >= MONTHLY_BUDGET_CNY) return json({ code: "budget" }, 503);
 
   const logUsage = (reply: ModelReply, counted: boolean) => admin.from("ai_usage").insert({
@@ -274,5 +275,5 @@ Deno.serve(async (req) => {
     if (result.verdict === "good") result.praise = `${result.praise} 小提示：${note}`.trim();
     else result.issues = [...result.issues.slice(0, 3), { type: "usage", note }];
   }
-  return json({ ...result, remaining: Math.max(0, DAILY_LIMIT - status.today_count - 1) });
+  return json({ ...result, remaining: DAILY_LIMIT > 0 ? Math.max(0, DAILY_LIMIT - status.today_count - 1) : null });
 });

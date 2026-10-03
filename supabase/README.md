@@ -1,6 +1,6 @@
 # 云端免费模式（Supabase + 千问）
 
-用户打开网页就能用，不用注册：页面在后台用 Supabase 的匿名登录给每个访客一个自己的账号，进度存在云端，AI 判断由服务器函数用你的千问（阿里云百炼）Key 完成，每人每天有免费次数。想在手机和电脑间同步的用户可以在「设置」里绑定邮箱（可选）。
+用户打开网页就能用，不用注册：页面在后台用 Supabase 的匿名登录给每个访客一个自己的账号，进度存在云端，AI 判断由服务器函数用你的千问（阿里云百炼）Key 完成，不限次数（每月总预算用完时暂停）。想在手机和电脑间同步的用户可以在「设置」里绑定邮箱（可选）。
 
 `config.js` 里的 Supabase 地址留空时，网站按原来的本地模式运行，所以下面的步骤做完之前，线上网站不受影响。
 
@@ -9,7 +9,7 @@
 | 位置 | 作用 |
 |---|---|
 | `migrations/20260927000000_init.sql` | 数据表（`user_state`、`user_cards`、`ai_usage`）、行级权限、用量统计函数 |
-| `functions/judge/index.ts` | 判断句子：检查每日次数、每个 IP 的次数、每月总预算和句子长度，再调用千问；回复不可用或服务临时出错时重试一次；记录花费 |
+| `functions/judge/index.ts` | 判断句子：检查每月总预算和句子长度（也可以设置每日次数上限），再调用千问；回复不可用或服务临时出错时重试一次；记录花费 |
 | `functions/judge/parse.ts` | 把模型回复解析成判断结果：容错提取、字段校验、截断检测。测试：`node --test supabase/functions/judge/parse.test.ts` |
 | `../config.js` | 前端用的 Supabase 地址和公开 key |
 
@@ -24,7 +24,7 @@
    - `AI_API_KEY`：阿里云百炼的 API Key
    - `AI_BASE_URL`：中国站填 `https://dashscope.aliyuncs.com/compatible-mode/v1`，国际站填 `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`
    - `IP_SALT`：任意一串随机字符
-   - 可选：`AI_MODEL`（默认 `qwen-plus`）、`DAILY_LIMIT`（默认 60）、`IP_DAILY_LIMIT`（默认 180）、`MONTHLY_BUDGET_CNY`（默认 150）、`PRICE_IN_PER_M_CNY` / `PRICE_OUT_PER_M_CNY`（按百炼控制台当前价格填，单位：元/百万 token）
+   - 可选：`AI_MODEL`（默认 `qwen-plus`）、`DAILY_LIMIT` / `IP_DAILY_LIMIT`（每人 / 每个 IP 每天的次数上限，默认 0 = 不限）、`MONTHLY_BUDGET_CNY`（默认 150）、`PRICE_IN_PER_M_CNY` / `PRICE_OUT_PER_M_CNY`（按百炼控制台当前价格填，单位：元/百万 token）
 7. **填前端配置**：Project Settings → API，把 Project URL 和 anon public key 填进 `config.js`，提交并推送。
 
 ## 防刷（建议）
