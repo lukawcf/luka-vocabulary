@@ -202,22 +202,40 @@ function ensureBonus(){
    Optional. With the learner's MaiMemo open-API token the day's words come from MaiMemo
    (study/get_today_items) instead of the built-in plan: MaiMemo owns the word list and the review
    schedule, and this page only adds sentence practice. Nothing is written back to MaiMemo.
-   The token stays in this browser and goes straight to open.maimemo.com (which allows this site's
-   origin). A word counts as done for today once it has a flower dated today, so progress follows
+   The token is kept in this browser. MaiMemo does not allow pages to call it directly (CORS), so in
+   cloud mode each call goes through the "maimemo" server function, which passes the token on for
+   that one call and never stores it. A word counts as done for today once it has a flower dated today, so progress follows
    the learner across devices through the synced cards. MaiMemo's study API is in public beta and
    needs the app opened today with auto-sync on. */
-const MM_KEY = "luka_maimemo", MM_API = "https://open.maimemo.com/open/api/v1/";
+const MM_KEY = "luka_maimemo", MM_API = "https://open.maimemo.com/open/api/v1/memo/";
 let MM = null;
 try{ MM = JSON.parse(localStorage.getItem(MM_KEY)||"null"); }catch(e){}
 const mmOn = () => !!MM?.token;
 let mmItems = null, mmState = "idle", mmError = "", mmDay = null;
+// what people paste: "Bearer xxx", quotes, spaces or line breaks around the token
+const mmClean = t => String(t||"").trim().replace(/^bearer\s+/i, "").replace(/^["'“”]+|["'“”]+$/g, "").trim();
 async function mmCall(path, body, token=MM?.token){
+  token = mmClean(token);
+  if(sb){
+    if(!session) throw {code:"mm_wait"};               // the relay needs our own sign-in first
+    const { data, error } = await sb.functions.invoke("maimemo", {body:{path, body:body||{}, token}});
+    if(error){
+      let j = null; try{ j = await error.context?.json(); }catch(e){}
+      const status = error.context?.status;
+      if(j?.code==="unauthorized") throw {code:"mm_wait"};
+      if(status===401 || status===403 || j?.code==="mm_auth" || (j?.errors||[]).some(x=>/unauthori/i.test(x.code||""))) throw {code:"mm_auth"};
+      throw {code: status ? "mm_error" : "mm_network", detail: j?.errors?.[0]?.msg || j?.code || status || ""};
+    }
+    if(data?.success===false) throw {code:"mm_error", detail: data?.errors?.[0]?.msg || ""};
+    return data?.data ?? data;
+  }
+  // local mode (no Supabase): direct call, which works only where MaiMemo allows it
   let r, j = null;
   try{ r = await fetch(MM_API+path, {method:"POST", headers:{Authorization:"Bearer "+token, "Content-Type":"application/json"}, body:JSON.stringify(body||{})}); }
   catch(e){ throw {code:"mm_network"}; }
   try{ j = await r.json(); }catch(e){}
   if(r.status===401 || r.status===403 || (j?.errors||[]).some(x=>/unauthori/i.test(x.code||""))) throw {code:"mm_auth"};
-  if(!r.ok || j?.success===false) throw {code:"mm_error"};
+  if(!r.ok || j?.success===false) throw {code:"mm_error", detail: j?.errors?.[0]?.msg || r.status};
   return j?.data ?? j;
 }
 async function loadDict(){
@@ -244,15 +262,23 @@ async function mmRefresh(){
       return Object.assign(it, {mmDone:!!x.is_finished, forgot:x.first_response==="FORGET", done:it.done || flowered});
     }));
     mmState = "ready"; mmError = "";
-  }catch(e){ mmState = "error"; mmError = e.code || "mm_error"; }
+  }catch(e){
+    if(e.code==="mm_wait"){ mmState = "idle"; return; }
+    mmState = "error"; mmError = e.code || "mm_error";
+  }
   if(canRerender()) render();
 }
 async function mmConnect(){
-  const token = $("#mmToken").value.trim(), st = $("#mmState");
+  const token = mmClean($("#mmToken").value), st = $("#mmState");
   if(!token){ st.textContent = "先粘贴墨墨的 Token"; return; }
   st.textContent = "正在连接…";
   try{ await mmCall("study/get_study_progress", {}, token); }
-  catch(e){ st.textContent = e.code==="mm_auth" ? "Token 不对，再检查一下" : "连不上墨墨，稍后再试"; return; }
+  catch(e){
+    st.textContent = e.code==="mm_auth" ? "Token 不对，再检查一下（在墨墨 App：我的 → 更多设置 → 实验功能 → 开放 API 里复制）"
+      : e.code==="mm_wait" ? "云端还在连接，过几秒再点连接"
+      : `连不上墨墨，稍后再试${e.detail ? `（${e.detail}）` : ""}`;
+    return;
+  }
   MM = {token}; try{ localStorage.setItem(MM_KEY, JSON.stringify(MM)); }catch(e){}
   mmItems = null; mmState = "idle";
   view = "learn"; render(); mmRefresh();
@@ -265,12 +291,12 @@ function mmSettingsHTML(){
   const how = `Token 在墨墨 App 里拿：我的 → 更多设置 → 实验功能 → 开放 API。墨墨里要开着「自动同步」。`;
   if(mmOn()) return `<div class="panel">
     <h2>墨墨背单词</h2>
-    <p class="muted small">已连接。每天的单词来自墨墨的今日学习单词，复习安排以墨墨为准，这里只负责造句和判断，不会改动墨墨里的数据。Token 只保存在这个浏览器里，换设备要重新填。</p>
+    <p class="muted small">已连接。每天的单词来自墨墨的今日学习单词，复习安排以墨墨为准，这里只负责造句和判断，不会改动墨墨里的数据。Token 只保存在这个浏览器里（读取墨墨数据时由我们的服务器转发，不会被保存），换设备要重新填。</p>
     <div class="row spread"><span class="muted small" id="mmState"></span><button class="btn" data-act="mmoff">断开墨墨</button></div>
   </div>`;
   return `<div class="panel">
     <h2>连接墨墨背单词（可选）</h2>
-    <p class="muted small">连上后，每天的单词来自墨墨的今日学习单词：在墨墨里背，在这里造句。复习安排以墨墨为准，这里不会改动墨墨里的数据。${how}Token 只保存在这个浏览器里。</p>
+    <p class="muted small">连上后，每天的单词来自墨墨的今日学习单词：在墨墨里背，在这里造句。复习安排以墨墨为准，这里不会改动墨墨里的数据。${how}Token 只保存在这个浏览器里；读取墨墨数据时由我们的服务器转发，不会被保存。</p>
     <label class="field">墨墨开放 API Token<input id="mmToken" type="password" autocomplete="off" spellcheck="false"></label>
     <div class="row spread"><span class="muted small" id="mmState"></span><button class="btn primary" data-act="mmon">连接</button></div>
   </div>`;
@@ -635,6 +661,7 @@ async function startSync(){
     syncReady = true;
     await (pushing = pushing.then(pushCloud));
     if(canRerender()) render();
+    if(mmOn() && !mmItems) mmRefresh();
   }catch(e){ setSync("连接失败，进度先存在本机"); }
 }
 /* ---------------- update notice ----------------
@@ -642,7 +669,7 @@ async function startSync(){
    - page older than the newest release (it stayed open during an update): offer a refresh
    - first visit after an update: show what changed since the version this browser last saw
    New learners start at the current version and see nothing. */
-const APP_VERSION = "2026.10.04";
+const APP_VERSION = "2026.10.04-2";
 const SEEN_KEY = "luka_seen_version";
 function showNotice(title, entries, button, act){
   const box = $("#notice");

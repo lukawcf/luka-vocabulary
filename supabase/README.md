@@ -10,6 +10,7 @@
 |---|---|
 | `migrations/20260927000000_init.sql` | 数据表（`user_state`、`user_cards`、`ai_usage`）、行级权限、用量统计函数 |
 | `functions/judge/index.ts` | 判断句子：检查每月总预算和句子长度（也可以设置每日次数上限）；先让千问改出最小修正，再判断单词的意思用对没有，再为每个出错的地方写提示；提示不合规则时让模型改写；服务临时出错时重试一次；每次调用都记录花费 |
+| `functions/maimemo/index.ts` | 转发墨墨背单词的开放 API（墨墨不允许网页直接调用）：只允许已登录的访客、只开放读取今日单词和学习进度两个接口，用户的墨墨 Token 只用于当次请求，不保存 |
 | `functions/judge/parse.ts` | 不依赖网络的部分：解析模型回复、检查提示规则（语法术语、给答案）、逐词对比原句和修正句、区分拼写错误和其他错误、生成兜底提示。测试：`node --test supabase/functions/judge/parse.test.ts` |
 | `../config.js` | 前端用的 Supabase 地址和公开 key |
 
@@ -20,6 +21,7 @@
 3. **开启匿名登录**：Authentication → Sign In / Providers → 打开 **Anonymous sign-ins**。Email 登录保持开启（绑定邮箱要用）。
 4. **设置网址**：Authentication → URL Configuration，Site URL 填 `https://lukawcf.github.io/luka-vocabulary/`，Redirect URLs 也加上这个地址。
 5. **建服务器函数**：Edge Functions → Deploy a new function → 用网页编辑器，名字填 `judge`，建 `index.ts` 和 `parse.ts` 两个文件，分别粘入 `functions/judge/` 下同名文件的内容，然后部署。
+   再建一个名字叫 `maimemo` 的函数，粘入 `functions/maimemo/index.ts`。两个函数都在 Settings 里关掉 **Verify JWT**（函数自己检查登录）。
 6. **填密钥**：Edge Functions → Secrets，添加：
    - `AI_API_KEY`：阿里云百炼的 API Key
    - `AI_BASE_URL`：中国站填 `https://dashscope.aliyuncs.com/compatible-mode/v1`，国际站填 `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`
