@@ -13,10 +13,12 @@
 // are retried once too. Every model call is recorded in
 // ai_usage with its cost; only a judgement that reached the learner counts toward their quota.
 //
-// Secrets (supabase secrets set ...):
-//   AI_API_KEY    DashScope (Alibaba Cloud Model Studio) API key
-//   AI_BASE_URL   https://dashscope.aliyuncs.com/compatible-mode/v1        (China site)
-//                 https://dashscope-intl.aliyuncs.com/compatible-mode/v1   (international site)
+// Secrets (supabase secrets set ...). Any OpenAI-compatible chat API works; two are tuned for:
+//   Google Gemini   AI_BASE_URL https://generativelanguage.googleapis.com/v1beta/openai
+//                   AI_MODEL gemini-3.5-flash-lite, AI_API_KEY a Gemini API key
+//   Qwen (百炼)     AI_BASE_URL https://dashscope.aliyuncs.com/compatible-mode/v1 (China site)
+//                   or https://dashscope-intl.aliyuncs.com/compatible-mode/v1 (international),
+//                   AI_MODEL e.g. qwen3.7-flash, AI_API_KEY a DashScope key
 //   IP_SALT       any random string, keeps stored IP hashes unguessable
 // Optional: AI_MODEL (qwen-plus), DAILY_LIMIT / IP_DAILY_LIMIT (0 = unlimited), MONTHLY_BUDGET_CNY (150),
 //           PRICE_IN_PER_M_CNY / PRICE_OUT_PER_M_CNY (yuan per million tokens; check the console's price list)
@@ -39,7 +41,7 @@ const PRICE_IN = Number(env("PRICE_IN_PER_M_CNY", "0.8"));
 const PRICE_OUT = Number(env("PRICE_OUT_PER_M_CNY", "2"));
 const BASE_URL = env("AI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/+$/, "");
 const MODEL = env("AI_MODEL", "qwen-plus");
-const PROMPT_VERSION = "judge-v17";
+const PROMPT_VERSION = "judge-v18";
 
 // Server-side key: the legacy service role key, or the first of the newer secret keys
 // (SUPABASE_SECRET_KEYS is a JSON dictionary). Either bypasses RLS; never sent to browsers.
@@ -59,6 +61,18 @@ async function ipHash(req: Request) {
 
 type ModelReply = { content: string; finish: string | null; promptTokens: number; completionTokens: number };
 
+const IS_GEMINI = BASE_URL.includes("generativelanguage.googleapis.com");
+const IS_QWEN = BASE_URL.includes("dashscope");
+
+// Provider-specific request settings.
+// Qwen: JSON mode needs "JSON" in the prompt and thinking turned off.
+// Gemini 3.x: thinking cannot be turned off, only kept minimal; it counts toward max_tokens, so the
+// limit is higher. Google advises leaving temperature at its default for Gemini 3, and JSON is
+// requested by the prompt (the replies are parsed tolerantly).
+const PROVIDER_OPTIONS = IS_GEMINI
+  ? { reasoning_effort: "minimal", max_tokens: 1500 }
+  : { response_format: { type: "json_object" }, ...(IS_QWEN ? { enable_thinking: false } : {}), temperature: 0.2, max_tokens: 500 };
+
 // One chat completion. Throws "transient" for network errors, timeouts, 429 and 5xx (worth one
 // retry) and "upstream" for anything else.
 async function callModel(prompt: string): Promise<ModelReply> {
@@ -70,10 +84,7 @@ async function callModel(prompt: string): Promise<ModelReply> {
       body: JSON.stringify({
         model: MODEL,
         messages: [{ role: "user", content: prompt }],
-        response_format: { type: "json_object" }, // Qwen: needs "JSON" in the prompt and non-thinking mode
-        ...(BASE_URL.includes("dashscope") ? { enable_thinking: false } : {}),
-        temperature: 0.2,
-        max_tokens: 500,
+        ...PROVIDER_OPTIONS,
       }),
       signal: AbortSignal.timeout(20000),
     });
@@ -87,7 +98,8 @@ async function callModel(prompt: string): Promise<ModelReply> {
     content: out?.choices?.[0]?.message?.content ?? "",
     finish: out?.choices?.[0]?.finish_reason ?? null,
     promptTokens: out?.usage?.prompt_tokens ?? 0,
-    completionTokens: out?.usage?.completion_tokens ?? 0,
+    // thinking tokens are billed as output; some providers leave them out of completion_tokens
+    completionTokens: Math.max(out?.usage?.completion_tokens ?? 0, (out?.usage?.total_tokens ?? 0) - (out?.usage?.prompt_tokens ?? 0)),
   };
 }
 
