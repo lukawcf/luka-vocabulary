@@ -91,8 +91,12 @@ async function callModel(prompt: string): Promise<ModelReply> {
   } catch {
     throw new Error("transient");
   }
-  if (res.status === 429 || res.status >= 500) throw new Error("transient");
-  if (!res.ok) throw new Error("upstream");
+  if (!res.ok) {
+    // the provider's own error text (never contains our key) goes to the function logs
+    const detail = (await res.text().catch(() => "")).slice(0, 500);
+    console.error(`model call failed: ${res.status} ${MODEL} ${detail}`);
+    throw new Error(res.status === 429 || res.status >= 500 ? "transient" : "upstream");
+  }
   const out = await res.json();
   return {
     content: out?.choices?.[0]?.message?.content ?? "",
