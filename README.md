@@ -2,25 +2,61 @@
 
 # Luka Vocabulary
 
-用单词自己造句来背雅思核心词汇。AI 判断句子：好句子给 🌸，有问题给 💩，只指出问题不给改好的答案。
+用单词自己造句来背雅思核心词汇。AI 判断句子：好句子给 🌸，有问题给 💩，并用大白话指出错在哪里。
 
-## 功能
+在线使用：https://lukawcf.github.io/luka-vocabulary/ （打开就能用，不用注册）
 
-- **内置雅思核心 3000 词**：第一次打开时随机打乱顺序，之后顺序固定
-- **每天最多 20 个新词、20 个复习**，按遗忘曲线（SM-2）安排复习
+## 怎么学
+
+- **内置雅思核心 3000 词**：第一次打开时随机打乱顺序
+- **每天最多 20 个新词、20 个复习**，按遗忘曲线（SM-2）安排复习；新词和复习随机混在一起出现
+- **新词练两遍**：第一次拿到 🌸 后，隔 3 到 7 个单词（随机）会再出现一次，显示上次的句子，要求换一个新句子
+- **中文默认不显示**：新词、复习、第二遍都一样，点「看中文」才显示；看过中文的词会更早回来复习
+- **直接造句**：没有例句、不用先猜意思，写完点「判断」
+- 拿到 🌸 后单词留在屏幕上，点「下一个单词」再继续
 - 今天的任务做完后进入加练：**每小时刷新 5 个**加练单词
-- 中文释义默认隐藏，点「看中文」才显示；看过的词会更早回来复习
-- 美式发音，支持语音输入（Chrome / Edge）
-- **免费 AI 判断**：网页版用项目自己的千问（qwen3.7-flash）判句子，用户不用注册、不用填 Key，不限次数
-- **本地模式自带 API Key**：`config.js` 留空时，用户可以接 Claude、OpenAI、Gemini、DeepSeek、通义千问、Kimi、智谱、硅基流动、OpenRouter、Ollama，以及任何兼容 OpenAI 接口的服务
-- **更新通知**：每次发布新版本，打开的用户会看到这次改了什么；页面一直开着的用户会收到「刷新」提示
-- 导出和导入进度备份（「导出为 Skill」已实现但暂未开放，见 `index.html` 里的 `SKILL_EXPORT`）
+- 美式发音（点「美式发音」才播放），支持语音输入（Chrome / Edge）
 
-## 运行
+## AI 怎么判断
 
-整个 App 只有一个 `index.html` 文件，不需要构建。
+网页版用项目自己的千问（阿里云百炼，当前模型 `qwen3.7-flash`）判句子，用户不用填 Key，**不限次数**。服务器函数 `supabase/functions/judge` 分几步完成：
 
-本地预览：
+1. **先找错**：让模型把句子最小限度地改对（只改拼写和明确的语法错误），代码逐词对比原句和改后的句子，找出出错的位置
+2. **再判词义**：用改好的句子只问一个问题：这个单词的意思用对了没有？语法错误不会连累目标词
+3. **给提示**：每个出错的位置一条提示，同时复核这一处是不是真的错了（只是另一种说法的不算）
+4. **检查提示**：服务器检查每条提示是否符合规则，不符合就让模型改写，还不行就换成代码生成的提示
+
+提示的规则：
+
+- 用大白话，不用「主语、介词、时态、可数」这类语法术语
+- `in`、`the`、`because`、`so` 这类小词直接告诉答案，例如「'interested' 后面要加 'in'」
+- 其他词不给答案，只说怎么改，例如「'invent' 这个词的样子不对，前面说的是一个地方，词尾要变」
+- 拼错的词（要练的单词除外）不判 💩，只提醒拼写
+- 「用法」只写这个词一般描述什么，加 2 到 3 个常用搭配
+
+规则的检查和逐词对比都在 `supabase/functions/judge/parse.ts`，有单元测试。
+
+## 进度和数据
+
+- 打开网页就自动创建一个匿名账号，进度存在 Supabase 数据库（详见 `supabase/README.md`），每个人只能读写自己的数据
+- 想在手机和电脑之间同步，可以在「设置」里绑定邮箱（可选）
+- 「设置」里可以导出和导入进度备份
+- 判断句子只经过服务器函数，千问的 API Key 只存在服务器上
+- 每月总预算用完时 AI 判断暂停，背单词功能照常可用
+
+## 更新通知
+
+每次发布新版本，用户打开网页时会在顶部看到这次改了什么；页面一直开着的用户会收到「有新版本，刷新一下」的提示。
+
+发布步骤：
+
+1. 把 `index.html` 里的 `APP_VERSION` 改成新版本号，例如 `2026.10.05`（同一天多次发布用 `2026.10.05-2`）
+2. 在 `changelog.json` 最前面加一条同版本号的更新说明
+3. 改了 `supabase/functions/judge/` 的话，把 `index.ts` 和 `parse.ts` 重新部署到 Supabase（步骤见 `supabase/README.md`）
+
+## 本地运行
+
+整个 App 是一个 `index.html`，不需要构建：
 
 ```bash
 python -m http.server 5173
@@ -28,30 +64,28 @@ python -m http.server 5173
 
 然后打开 http://localhost:5173 。
 
-## 部署
+跑服务器函数的测试（需要 Node 22.6 或更新版本）：
 
-每次发布：把 `index.html` 里的 `APP_VERSION` 改成新版本号（如 `2026.10.02`，同一天多次发布用 `2026.10.02-2`），并在 `changelog.json` 最前面加一条同版本号的更新说明。
+```bash
+node --test supabase/functions/judge/parse.test.ts
+```
 
-放到任意静态托管平台即可，例如 GitHub Pages、Vercel、Netlify。语音识别需要 https，这些平台默认都是 https。
+## 项目结构
 
-GitHub Pages：把仓库推送到 GitHub，然后在 Settings → Pages 里选择 `main` 分支的根目录。
-
-## 数据与隐私
-
-- 网页版默认是云端免费模式（见 `supabase/README.md`）：打开即自动创建匿名账号，进度存在 Supabase 数据库，行级权限保证每个人只能读写自己的数据；句子由服务器函数交给千问判断，不限次数，只有每月总预算用完时才暂停
-- 云端模式不提供自带 Key 的选项，所有判断都经过服务器函数
-- 本地模式下用户填的 API Key 只保存在自己浏览器里，判断时浏览器直接请求所选的服务商，不经过我们的服务器
-- `config.js` 里的 Supabase 地址留空时，App 回到纯本地模式：进度只存在浏览器 localStorage
-- 备份文件不包含 API Key
+| 位置 | 作用 |
+|---|---|
+| `index.html` | 整个网页 App：学习流程、复习安排、发音、云端同步、更新通知 |
+| `config.js` | Supabase 地址和公开 key；留空时 App 退回纯本地模式（进度存在浏览器里，判断用用户自己填的 API Key） |
+| `changelog.json` | 更新说明，更新通知读这个文件 |
+| `supabase/` | 数据库结构和判断句子的服务器函数，见 `supabase/README.md` |
+| `audio/` | 3000 个单词的美式发音录音 |
+| `tools/gen_audio.py` | 生成录音的脚本 |
+| `claude-artifact.html` | 旧的 claude.ai 版源码，已不再维护 |
 
 ## 发音
 
-每个单词都有预先生成的美式发音录音，放在 `audio/a00.json` … `audio/a1f.json`（按单词哈希分成 32 组，每组 `{单词: base64 mp3}`）。录音用开源语音模型 [Kokoro](https://github.com/hexgrad/kokoro)（Apache-2.0，通过 [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx)）的美式男声 `am_michael` 生成，生成脚本是 `tools/gen_audio.py`。没有录音的单词才会用浏览器自带的朗读。
+每个单词都有预先生成的美式发音录音，放在 `audio/a00.json` … `audio/a1f.json`（按单词哈希分成 32 组，每组 `{单词: base64 mp3}`）。录音用开源语音模型 [Kokoro](https://github.com/hexgrad/kokoro)（Apache-2.0，通过 [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx)）的美式男声 `am_michael` 生成。没有录音的单词才会用浏览器自带的朗读。
 
 ## 词库来源
 
 雅思词表取自开源英汉词典 [ECDICT](https://github.com/skywind3000/ECDICT)（Copyright (c) skywind3000，MIT License）：选取标记为雅思（ielts）的单词，去掉中考级别的基础词，按 COCA / BNC 语料库词频取最常用的 3000 个，释义精简为最多两个词性。
-
-## claude.ai 版
-
-`claude-artifact.html` 是发布在 claude.ai 上的版本的源码。它用打开者自己的 Claude 套餐额度判句子，不需要 API Key，只能在 claude.ai 里运行（直接用浏览器打开时 AI 不可用）。两个版本的备份文件通用。
