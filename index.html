@@ -142,7 +142,10 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 function dayNum(d=new Date()){ return Math.floor(new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()/864e5); }
 function hourKey(d=new Date()){ return dayNum(d)+"-"+d.getHours(); }
-const meaningOf = w => (S.bank.find(x=>x.w===w)||{}).m || "";
+// dict.json (ECDICT, about 27k common and exam words) is loaded only when the word list comes from
+// MaiMemo, for words outside the built-in IELTS list.
+let DICT = null;
+const meaningOf = w => (S.bank.find(x=>x.w===w)||{}).m || (DICT && DICT[w.toLowerCase()]) || "";
 
 /* ---------------- spaced repetition (SM-2) ----------------
    Quality comes from how the word went today:
@@ -170,7 +173,7 @@ function schedule(card, item){
 function ensurePlan(){
   const today = dayNum();
   if(S.plan && S.plan.day === today) return;
-  const due = Object.values(S.cards).filter(c=>c.due<=today).sort((a,b)=>a.due-b.due || a.ease-b.ease).slice(0, REVIEW_PER_DAY);
+  const due = Object.values(S.cards).filter(c=>!c.mm && c.due<=today).sort((a,b)=>a.due-b.due || a.ease-b.ease).slice(0, REVIEW_PER_DAY);
   const fresh = S.bank.filter(x=>!S.cards[x.w]).slice(0, NEW_PER_DAY);
   // reviews and new words are mixed in random order, not one block after the other
   S.plan = {day:today, mixed:true, items:shuffled([
@@ -190,12 +193,105 @@ function ensureBonus(){
   if(S.bonus && S.bonus.key === k) return;
   const today = dayNum();
   const inPlan = new Set(S.plan.items.map(i=>i.w));
-  const pool = Object.values(S.cards).filter(c=>!inPlan.has(c.w) && !c.bonusDay?.includes?.(today))
+  const pool = Object.values(S.cards).filter(c=>!c.mm && !inPlan.has(c.w) && !c.bonusDay?.includes?.(today))
     .sort((a,b)=>a.due-b.due || a.ease-b.ease).slice(0, BONUS_PER_HOUR);
   S.bonus = {key:k, items:pool.map(c=>({w:c.w, kind:"bonus", poops:0, peeked:false, done:false, tries:[]}))};
   save();
 }
+/* ---------------- MaiMemo (墨墨背单词) ----------------
+   Optional. With the learner's MaiMemo open-API token the day's words come from MaiMemo
+   (study/get_today_items) instead of the built-in plan: MaiMemo owns the word list and the review
+   schedule, and this page only adds sentence practice. Nothing is written back to MaiMemo.
+   The token stays in this browser and goes straight to open.maimemo.com (which allows this site's
+   origin). A word counts as done for today once it has a flower dated today, so progress follows
+   the learner across devices through the synced cards. MaiMemo's study API is in public beta and
+   needs the app opened today with auto-sync on. */
+const MM_KEY = "luka_maimemo", MM_API = "https://open.maimemo.com/open/api/v1/";
+let MM = null;
+try{ MM = JSON.parse(localStorage.getItem(MM_KEY)||"null"); }catch(e){}
+const mmOn = () => !!MM?.token;
+let mmItems = null, mmState = "idle", mmError = "", mmDay = null;
+async function mmCall(path, body, token=MM?.token){
+  let r, j = null;
+  try{ r = await fetch(MM_API+path, {method:"POST", headers:{Authorization:"Bearer "+token, "Content-Type":"application/json"}, body:JSON.stringify(body||{})}); }
+  catch(e){ throw {code:"mm_network"}; }
+  try{ j = await r.json(); }catch(e){}
+  if(r.status===401 || r.status===403 || (j?.errors||[]).some(x=>/unauthori/i.test(x.code||""))) throw {code:"mm_auth"};
+  if(!r.ok || j?.success===false) throw {code:"mm_error"};
+  return j?.data ?? j;
+}
+async function loadDict(){
+  if(DICT) return;
+  try{ DICT = await (await fetch("dict.json")).json(); }catch(e){ DICT = {}; }
+}
+// Words already studied in MaiMemo today come first (forgotten ones first among them), then the rest;
+// random within each group. A word the learner has started on stays first.
+function mmOrder(items){
+  const rank = i => (i.tries.length || i.draft) ? 0 : i.mmDone ? (i.forgot ? 1 : 2) : 3;
+  return items.slice().sort((a,b)=>rank(a)-rank(b) || a.rnd-b.rnd);
+}
+async function mmRefresh(){
+  if(!mmOn() || mmState==="loading") return;
+  const today = dayNum();
+  if(mmDay !== today){ mmItems = null; mmDay = today; }
+  if(!mmItems){ mmState = "loading"; if(canRerender()) render(); }
+  try{
+    const [d] = await Promise.all([mmCall("study/get_today_items", {limit:1000}), loadDict()]);
+    const prev = new Map((mmItems||[]).map(i=>[i.w, i]));
+    mmItems = mmOrder((d?.today_items||[]).map(x=>{
+      const w = x.voc_spelling, flowered = (S.cards[w]?.flowers||[]).some(f=>f.d===today);
+      const it = prev.get(w) || {w, kind:x.is_new?"new":"review", mm:true, rnd:Math.random(), poops:0, level:0, done:false, tries:[]};
+      return Object.assign(it, {mmDone:!!x.is_finished, forgot:x.first_response==="FORGET", done:it.done || flowered});
+    }));
+    mmState = "ready"; mmError = "";
+  }catch(e){ mmState = "error"; mmError = e.code || "mm_error"; }
+  if(canRerender()) render();
+}
+async function mmConnect(){
+  const token = $("#mmToken").value.trim(), st = $("#mmState");
+  if(!token){ st.textContent = "先粘贴墨墨的 Token"; return; }
+  st.textContent = "正在连接…";
+  try{ await mmCall("study/get_study_progress", {}, token); }
+  catch(e){ st.textContent = e.code==="mm_auth" ? "Token 不对，再检查一下" : "连不上墨墨，稍后再试"; return; }
+  MM = {token}; try{ localStorage.setItem(MM_KEY, JSON.stringify(MM)); }catch(e){}
+  mmItems = null; mmState = "idle";
+  view = "learn"; render(); mmRefresh();
+}
+function mmDisconnect(){
+  MM = null; try{ localStorage.removeItem(MM_KEY); }catch(e){}
+  mmItems = null; mmState = "idle"; renderSettings();
+}
+function mmSettingsHTML(){
+  const how = `Token 在墨墨 App 里拿：我的 → 更多设置 → 实验功能 → 开放 API。墨墨里要开着「自动同步」。`;
+  if(mmOn()) return `<div class="panel">
+    <h2>墨墨背单词</h2>
+    <p class="muted small">已连接。每天的单词来自墨墨的今日学习单词，复习安排以墨墨为准，这里只负责造句和判断，不会改动墨墨里的数据。Token 只保存在这个浏览器里，换设备要重新填。</p>
+    <div class="row spread"><span class="muted small" id="mmState"></span><button class="btn" data-act="mmoff">断开墨墨</button></div>
+  </div>`;
+  return `<div class="panel">
+    <h2>连接墨墨背单词（可选）</h2>
+    <p class="muted small">连上后，每天的单词来自墨墨的今日学习单词：在墨墨里背，在这里造句。复习安排以墨墨为准，这里不会改动墨墨里的数据。${how}Token 只保存在这个浏览器里。</p>
+    <label class="field">墨墨开放 API Token<input id="mmToken" type="password" autocomplete="off" spellcheck="false"></label>
+    <div class="row spread"><span class="muted small" id="mmState"></span><button class="btn primary" data-act="mmon">连接</button></div>
+  </div>`;
+}
+function mmEmptyHTML(){
+  const again = `<div class="row"><button class="btn" data-act="mmrefresh">刷新</button></div>`;
+  const box = (mark, title, text, btn=again) => `<div class="panel" style="align-items:flex-start">
+    <div class="done-mark" aria-hidden="true">${mark}</div><h2>${title}</h2><p class="muted">${text}</p>${btn}</div>`;
+  if(mmState==="idle" || mmState==="loading") return box("⏳", "正在读取墨墨今天的单词…", "", "");
+  if(mmState==="error") return mmError==="mm_auth"
+    ? box("🔑", "墨墨的 Token 失效了", "到「设置」里断开墨墨，再重新填一次 Token。", "")
+    : box("📡", "暂时读不到墨墨的数据", "墨墨的学习数据接口还在公测，偶尔会不可用。稍后点刷新再试；也可以在「设置」里断开墨墨，先用内置词表。");
+  if(!mmItems.length) return box("📱", "墨墨里还没有今天的单词", "先打开墨墨 App 背一会儿（要开着自动同步），再回来点刷新。");
+  return box("🌸", "墨墨今天的单词都造过句了", "在墨墨里继续背，新背的单词点刷新就会出现在这里。");
+}
+
 function current(){
+  if(mmOn()){
+    const p = mmItems?.find(i=>!i.done);
+    return p ? {item:p, list:"mm"} : null;
+  }
   ensurePlan(); mixPlan();
   const p = S.plan.items.find(i=>!i.done);
   if(p) return {item:p, list:"plan"};
@@ -546,7 +642,7 @@ async function startSync(){
    - page older than the newest release (it stayed open during an update): offer a refresh
    - first visit after an update: show what changed since the version this browser last saw
    New learners start at the current version and see nothing. */
-const APP_VERSION = "2026.10.03-2";
+const APP_VERSION = "2026.10.04";
 const SEEN_KEY = "luka_seen_version";
 function showNotice(title, entries, button, act){
   const box = $("#notice");
@@ -656,7 +752,8 @@ function nextRefresh(){
 function render(){
   if(view==="settings"){ renderSettings(); return; }
   const cur = current();
-  $("#mode").textContent = !cur ? "" : cur.list==="plan" ? "今日学习" : `今日任务已完成 · 加练，${nextRefresh()} 刷新下一批`;
+  $("#mode").textContent = mmOn() ? "墨墨今日单词" : !cur ? "" : cur.list==="plan" ? "今日学习" : `今日任务已完成 · 加练，${nextRefresh()} 刷新下一批`;
+  if(!cur && mmOn()){ $("#view").innerHTML = mmEmptyHTML(); return; }
   if(!cur){
     const planned = S.plan.items.length > 0;
     const anyCards = Object.keys(S.cards).length > 0;
@@ -679,6 +776,7 @@ function render(){
       <div class="word">${esc(item.w)}</div>
       <button class="btn speak" data-act="say" aria-label="美式发音">${SPEAKER}美式发音</button>
     </div>
+    ${item.mm && !item.mmDone ? `<p class="muted small">这个词今天在墨墨里还没背</p>` : item.mm && item.forgot ? `<p class="muted small">今天在墨墨里这个词忘了，造个句子记牢它</p>` : ""}
     <p class="note" id="sayState"></p>
     ${meaningHTML(item, meaning)}
     ${past.length ? `<div><p class="sub">之前拿到 🌸 的句子</p><div class="list">${past.map(f=>`<div><span class="e">🌸</span><p>${esc(f.s)}</p></div>`).join("")}</div></div>` : ""}
@@ -766,7 +864,7 @@ async function toggleMic(){
    looked is saved in item.level for scheduling. */
 let revealed = null;
 function meaningHTML(item, meaning){
-  if(revealed === item) return `<p class="meaning">${esc(meaning)}</p>`;
+  if(revealed === item) return meaning ? `<p class="meaning">${esc(meaning)}</p>` : `<p class="muted small">内置词典里没有这个词的中文，去墨墨里看释义。</p>`;
   return `<div class="row"><button class="btn" data-act="show">看中文</button></div>`;
 }
 function verdictHTML(t){
@@ -796,6 +894,7 @@ function renderSettings(){
   $("#mode").textContent = "设置";
   $("#view").innerHTML = `
   ${accountHTML()}
+  ${mmSettingsHTML()}
   ${first ? `<div class="panel"><h2>先配置一个 AI</h2><p class="muted">造句要靠 AI 判 🌸 还是 💩。用你自己的 API Key，任何一家都行，判一句话的费用通常不到一分钱。</p></div>` : ""}
   ${cloudOn ? "" : `<div class="panel">
     <h2>AI 设置</h2>
@@ -931,6 +1030,7 @@ async function submit(){
     busy = false;
     const t = {sentence:text, ...r};
     item.tries.push(t);
+    st.textContent = "";
     if(r.verdict==="good"){
       item.draft = "";
       if(cur.list==="plan" && item.kind==="new" && (item.round||1)===1)
@@ -949,9 +1049,11 @@ async function submit(){
 function finishItem(cur, sentence){
   const {item} = cur;
   let card = S.cards[item.w];
-  if(!card) card = S.cards[item.w] = {w:item.w, reps:0, ease:2.5, interval:0, due:dayNum(), lapses:0, flowers:[]};
+  if(!card) card = S.cards[item.w] = cur.list==="mm" ? {w:item.w, mm:true, flowers:[]}
+    : {w:item.w, reps:0, ease:2.5, interval:0, due:dayNum(), lapses:0, flowers:[]};
   card.flowers.push({s:sentence, d:dayNum()});
-  if(cur.list==="plan"){
+  if(cur.list==="mm"){ /* MaiMemo owns the schedule */ }
+  else if(cur.list==="plan"){
     if(item.kind==="new" && (item.round||1)===1) queueSecondPass(item);
     else if(item.kind==="new") schedule(card, {...item, poops:item.poops + (item.prevPoops||0), level:Math.max(item.level||0, item.prevLevel||0)});
     else schedule(card, item);
@@ -1010,6 +1112,9 @@ $("#view").addEventListener("click", e=>{
     case "aisave": saveSettings(); break;
     case "aiclear": AI = null; saveAI(); renderSettings(); break;
     case "bindemail": bindEmail(); break;
+    case "mmon": mmConnect(); break;
+    case "mmoff": mmDisconnect(); break;
+    case "mmrefresh": mmRefresh(); break;
     case "emaillogin": emailSignIn(); break;
     case "signout": signOutCloud(); break;
     case "back": view = "learn"; render(); break;
@@ -1041,13 +1146,15 @@ let lastKey = hourKey();
 setInterval(()=>{
   const k = hourKey();
   if(view!=="learn") return;
-  if(k !== lastKey){ lastKey = k; if(!busy && !advancing) render(); }
+  if(k !== lastKey){ lastKey = k; if(mmOn()) mmRefresh(); else if(!busy && !advancing) render(); }
   else if(!busy && !advancing && !current()) render();
 }, 30000);
 
 render();
 initCloud();
 checkUpdates();
+mmRefresh();
+document.addEventListener("visibilitychange", ()=>{ if(document.visibilityState==="visible") mmRefresh(); });
 </script>
 
 </body>

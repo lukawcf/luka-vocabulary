@@ -17,6 +17,17 @@
 - 今天的任务做完后进入加练：**每小时刷新 5 个**加练单词
 - 美式发音（点「美式发音」才播放），支持语音输入（Chrome / Edge）
 
+## 连接墨墨背单词（可选）
+
+在墨墨里背，在这里造句。到「设置」里填墨墨的开放 API Token（墨墨 App：我的 → 更多设置 → 实验功能 → 开放 API），并在墨墨里开着「自动同步」：
+
+- 每天的单词来自墨墨的「今日学习单词」，复习安排以墨墨为准，本 App 自己的复习安排暂停
+- 今天在墨墨里背过的词排在前面，其中背的时候忘了的最先出现；还没在墨墨里背的放在后面
+- 只读取墨墨的数据，不会改动墨墨里的任何东西。墨墨的开放接口不能写入「认识 / 模糊 / 忘记」，所以背单词仍在墨墨 App 里完成
+- Token 只保存在这个浏览器里，网页直接请求墨墨的接口，不经过我们的服务器
+- 内置 3000 词以外的单词，中文意思来自扩充词典 `dict.json`（约 2.7 万个常用词和考试词）
+- 墨墨的学习数据接口还在公测，偶尔可能读不到；在「设置」里断开墨墨就回到内置词表
+
 ## AI 怎么判断
 
 网页版用项目自己的千问（阿里云百炼，当前模型 `qwen3.7-flash`）判句子，用户不用填 Key，**不限次数**。服务器函数 `supabase/functions/judge` 分几步完成：
@@ -77,9 +88,11 @@ node --test supabase/functions/judge/parse.test.ts
 | `index.html` | 整个网页 App：学习流程、复习安排、发音、云端同步、更新通知 |
 | `config.js` | Supabase 地址和公开 key；留空时 App 退回纯本地模式（进度存在浏览器里，判断用用户自己填的 API Key） |
 | `changelog.json` | 更新说明，更新通知读这个文件 |
+| `dict.json` | 扩充词典（ECDICT 约 2.7 万词），只在连接墨墨后加载；用 `tools/gen_dict.py` 生成 |
 | `supabase/` | 数据库结构和判断句子的服务器函数，见 `supabase/README.md` |
 | `audio/` | 3000 个单词的美式发音录音 |
 | `tools/gen_audio.py` | 生成录音的脚本 |
+| `tools/gen_dict.py` | 从 ECDICT 生成 `dict.json` 的脚本 |
 
 ## 发音
 
@@ -88,3 +101,5 @@ node --test supabase/functions/judge/parse.test.ts
 ## 词库来源
 
 雅思词表取自开源英汉词典 [ECDICT](https://github.com/skywind3000/ECDICT)（Copyright (c) skywind3000，MIT License）：选取标记为雅思（ielts）的单词，去掉中考级别的基础词，按 COCA / BNC 语料库词频取最常用的 3000 个，释义精简为最多两个词性。
+
+扩充词典 `dict.json` 同样来自 ECDICT：所有标记为中考、高考、四级、六级、考研、托福、雅思、GRE 的单词，加上词频最高的 2.5 万个词，共约 2.7 万个，释义按同样的方式精简。
