@@ -75,18 +75,25 @@ export function followsRules(j: Judgement, sentence: string): boolean {
 // Last resort when a retry still breaks the rules: drop the offending notes rather than show them.
 // The place a dropped note pointed at (a quoted word from the learner's own sentence) is kept, so
 // the learner still knows where to look.
-export function sanitize(j: Judgement, sentence: string): Judgement {
-  const issues = j.issues.filter((x) => !ruleBreaks(x.note, sentence));
+export function sanitize(j: Judgement, sentence: string, slipSpots: Spot[] = []): Judgement {
+  const issues = j.issues
+    .map((x, i) => !ruleBreaks(x.note, sentence) ? x : i < slipSpots.length ? { type: x.type, note: spotNote(slipSpots[i]) } : null)
+    .filter((x): x is Issue => !!x);
   if (j.verdict === "bad" && !issues.length) {
-    const own = sentence.toLowerCase();
+    const own = " " + englishWords(sentence).join(" ") + " ";
     const spots = [...new Set(j.issues.flatMap((x) => [...x.note.matchAll(QUOTED)]
       .map((m) => (m[1] ?? m[2] ?? m[3] ?? m[4] ?? "").trim())
-      .filter((q) => /[a-z]/i.test(q) && own.includes(q.toLowerCase()))))].slice(0, 2);
+      .filter((q) => /[a-z]/i.test(q) && own.includes(" " + englishWords(q).join(" ") + " "))))].slice(0, 2);
     issues.push({ type: "naturalness", note: spots.length
       ? `${spots.map((q) => `'${q}'`).join("、")} 这里不太对，再读一遍这一处，想想少了或多了什么。`
       : "这句还有地方不太对，再读一遍，想想哪里少了或多了什么。" });
   }
-  return { ...j, issues, usage: GRAMMAR_TERMS.test(j.usage) ? "" : j.usage };
+  return { ...j, issues, usage: GRAMMAR_TERMS.test(j.usage) ? "" : fixArticles(j.usage) };
+}
+
+// The model sometimes writes "an rare chance" in a collocation; never teach that.
+export function fixArticles(s: string): string {
+  return s.replace(/\b([Aa])n (?=[bcdfgjklmnpqrstvwxyz])/g, "$1 ");
 }
 
 // Correction pre-pass. A small model grading a sentence that also has a typo or a grammar slip
@@ -163,6 +170,9 @@ export function spotNote(x: Spot): string {
   if (x.kind === "missing" && small(x.fix)) return `'${x.word}' 后面少了 '${fix}'。`;
   if (x.kind === "extra" && small(x.word.split(" "))) return `'${x.word}' 这里多余，去掉它。`;
   if (x.kind === "wrong" && small(x.word.split(" ")) && small(x.fix)) return `'${x.word}' 这里要用 '${fix}'。`;
+  const w = x.word.toLowerCase(), f = fix;
+  if (x.kind === "wrong" && x.fix.length === 1 && !w.includes(" ") && w.slice(0, 3) === f.slice(0, 3))
+    return `'${x.word}' 这个词的样子要变一变，看看前后说的是一个还是多个、是什么时候的事。`;
   if (x.kind === "missing") return `'${x.word}' 附近少了一点东西，读一读，想想这里还缺什么。`;
   if (x.kind === "extra") return `'${x.word}' 这里好像多了点什么，读一读，想想去掉会不会更顺。`;
   return `'${x.word}' 这里不太对，再读一遍这一处，想想哪里要变一变。`;

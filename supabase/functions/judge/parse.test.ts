@@ -1,7 +1,7 @@
 // Run: node --test supabase/functions/judge/parse.test.ts   (Node 22.6+ strips the types)
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseReply, followsRules, sanitize, ruleBreaks, diffWords, spotNote } from "./parse.ts";
+import { parseReply, followsRules, sanitize, ruleBreaks, diffWords, spotNote, fixArticles } from "./parse.ts";
 
 const good = '{"verdict":"good","issues":[],"praise":"很自然","usage":"常用来描述问题出现：an issue arises"}';
 
@@ -139,4 +139,14 @@ test("fallback notes give the answer only for small linking words", () => {
   assert.equal(spotNote({ word: "in", kind: "wrong", fix: ["at"] }), "'in' 这里要用 'at'。");
   assert.equal(spotNote({ word: "in", kind: "extra", fix: [] }), "'in' 这里多余，去掉它。");
   assert.ok(!spotNote({ word: "invent", kind: "wrong", fix: ["invents"] }).includes("invents"));
+});
+
+test("fallbacks stay specific and collocations keep correct articles", () => {
+  assert.ok(spotNote({ word: "invent", kind: "wrong", fix: ["invents"] }).includes("样子要变"));
+  const s = "It is a rare place that invent the future.";
+  const j = { verdict: "bad" as const, praise: "", usage: "", issues: [{ type: "grammar", note: "'invent' 后面少了 's'" }] };
+  const out = sanitize(j, s, [{ word: "invent", kind: "wrong", fix: ["invents"] }]);
+  assert.equal(out.issues.length, 1);
+  assert.ok(out.issues[0].note.startsWith("'invent' 这个词的样子要变"));
+  assert.equal(fixArticles("an rare chance, an issue, An big deal, an hour"), "a rare chance, an issue, A big deal, an hour");
 });

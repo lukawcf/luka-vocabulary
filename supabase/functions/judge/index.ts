@@ -21,7 +21,7 @@
 // Optional: AI_MODEL (qwen-plus), DAILY_LIMIT / IP_DAILY_LIMIT (0 = unlimited), MONTHLY_BUDGET_CNY (150),
 //           PRICE_IN_PER_M_CNY / PRICE_OUT_PER_M_CNY (yuan per million tokens; check the console's price list)
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { parseReply, followsRules, sanitize, diffWords, spotNote, extractJson, type WordDiff, type Judgement } from "./parse.ts";
+import { parseReply, followsRules, sanitize, diffWords, spotNote, fixArticles, extractJson, type WordDiff, type Judgement } from "./parse.ts";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -39,7 +39,7 @@ const PRICE_IN = Number(env("PRICE_IN_PER_M_CNY", "0.8"));
 const PRICE_OUT = Number(env("PRICE_OUT_PER_M_CNY", "2"));
 const BASE_URL = env("AI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/+$/, "");
 const MODEL = env("AI_MODEL", "qwen-plus");
-const PROMPT_VERSION = "judge-v16";
+const PROMPT_VERSION = "judge-v17";
 
 // Server-side key: the legacy service role key, or the first of the newer secret keys
 // (SUPABASE_SECRET_KEYS is a JSON dictionary). Either bypasses RLS; never sent to browsers.
@@ -232,6 +232,7 @@ Deno.serve(async (req) => {
   }
   if (!result) return json({ code: lastError }, 502);
   // mistakes found by the correction pass: the sentence is bad, with one hint per spot
+  let slipSpots: WordDiff["spots"] = [];
   if (diff.spots.length) {
     // the hint call also double-checks each spot: a correction pass may "fix" acceptable English
     let checks: { wrong?: unknown; note?: unknown }[] = [];
@@ -241,6 +242,11 @@ Deno.serve(async (req) => {
       const items = (extractJson(h.content) as { spots?: unknown } | null)?.spots;
       if (h.finish !== "length" && Array.isArray(items) && items.length === diff.spots.length) checks = items;
     } catch { /* keep every spot, with spotNote */ }
+    slipSpots = diff.spots
+      .map((x, i) => ({ x, c: checks[i] ?? {} }))
+      .filter(({ c }) => c.wrong !== false)
+      .slice(0, 3)
+      .map(({ x }) => x);
     const slips = diff.spots
       .map((x, i) => ({ x, c: checks[i] ?? {} }))
       .filter(({ c }) => c.wrong !== false)
@@ -267,8 +273,9 @@ Deno.serve(async (req) => {
           .filter((x) => x.note);
       }
     } catch { /* fall through to sanitize */ }
-    if (!followsRules(result, sentence)) result = sanitize(result, sentence);
+    if (!followsRules(result, sentence)) result = sanitize(result, sentence, slipSpots);
   }
+  result.usage = fixArticles(result.usage);
   if (diff.typos.length) {
     const typos = diff.typos;
     const note = `${typos.map((t) => `'${t}'`).join("、")} 拼错了，再检查一下拼写。`;
