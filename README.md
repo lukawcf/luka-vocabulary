@@ -1,4 +1,4 @@
-<img src="logo.svg" width="72" alt="Luka Vocabulary logo">
+<img src="logo.png" width="72" alt="Luka Vocabulary logo">
 
 # Luka Vocabulary
 
