@@ -69,9 +69,17 @@ textarea{width:100%;font:16px/1.5 var(--body);color:var(--ink);background:var(--
 #sayState:empty{display:none}
 .usage{font-size:14px;margin-top:6px;padding:8px 10px;border-radius:8px;background:var(--surface);color:var(--ink)}
 .done-mark{font-size:48px}
-.notice{background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:10px;padding:14px 16px;display:flex;flex-direction:column;gap:8px}
-.notice ul{margin:0;padding-left:18px;font-size:14px}
-.notice .ver{font:500 12px var(--mono);color:var(--muted)}
+.notice{background:linear-gradient(135deg,var(--surface),var(--sunk));border:1px solid var(--accent);border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:12px}
+.notice .head{display:flex;align-items:center;gap:12px}
+.notice .icon{font-size:28px;line-height:1}
+.notice .pill{display:inline-block;font:700 11px var(--mono);letter-spacing:.06em;padding:2px 8px;border-radius:99px;background:var(--accent);color:var(--accent-ink);margin-right:8px;vertical-align:2px}
+.notice .title{flex:1;font-size:17px;font-weight:700}
+.notice .ver{font:500 12px var(--mono);color:var(--muted);margin-bottom:4px}
+.notice ul{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:6px;font-size:14px}
+.notice li{display:flex;gap:8px;line-height:1.5}
+.notice li::before{content:"✨";flex:none}
+.notice .actions{display:flex;justify-content:flex-end}
+.notice .actions .btn{padding:9px 22px;font-weight:700}
 @media (max-width:480px){.word{font-size:32px}.panel{padding:18px}}
 </style>
 </head>
@@ -538,12 +546,13 @@ async function startSync(){
    - page older than the newest release (it stayed open during an update): offer a refresh
    - first visit after an update: show what changed since the version this browser last saw
    New learners start at the current version and see nothing. */
-const APP_VERSION = "2026.10.03";
+const APP_VERSION = "2026.10.03-2";
 const SEEN_KEY = "luka_seen_version";
 function showNotice(title, entries, button, act){
   const box = $("#notice");
-  box.innerHTML = `<div class="row spread"><strong>${esc(title)}</strong><button class="btn ${act==="reload"?"primary":""}" data-notice="${act}">${esc(button)}</button></div>
-    ${entries.map(e=>`<div><div class="ver">${esc(e.date || e.v)}</div><ul>${(e.items||[]).map(i=>`<li>${esc(i)}</li>`).join("")}</ul></div>`).join("")}`;
+  box.innerHTML = `<div class="head"><span class="icon">${act==="reload"?"🔄":"🎉"}</span><div class="title"><span class="pill">${act==="reload"?"NEW":"更新"}</span>${esc(title)}</div></div>
+    ${entries.map(e=>`<div><div class="ver">${esc(e.date || e.v)}</div><ul>${(e.items||[]).map(i=>`<li><span>${esc(i)}</span></li>`).join("")}</ul></div>`).join("")}
+    <div class="actions"><button class="btn primary" data-notice="${act}">${esc(button)}</button></div>`;
   box.hidden = false;
 }
 $("#notice").addEventListener("click", e=>{
@@ -558,14 +567,14 @@ async function checkUpdates(){
   if(!Array.isArray(log) || !log.length) return;
   latestVersion = String(log[0].v);
   if(latestVersion > APP_VERSION){
-    showNotice("有新版本，刷新一下就能用上", log.filter(e=>e.v > APP_VERSION).slice(0,3), "刷新", "reload");
+    showNotice("发现新版本，点击刷新立即使用", log.filter(e=>e.v > APP_VERSION).slice(0,3), "立即刷新", "reload");
     return;
   }
   let seen = null;
   try{ seen = localStorage.getItem(SEEN_KEY); }catch(e){}
   if(!seen && !Object.keys(S.cards||{}).length){ try{ localStorage.setItem(SEEN_KEY, APP_VERSION); }catch(e){} return; }
   const fresh = log.filter(e=>e.v <= APP_VERSION && (!seen || e.v > seen)).slice(0,3);
-  if(fresh.length) showNotice("本次更新", fresh, "知道了", "seen");
+  if(fresh.length) showNotice("这次更新了什么", fresh, "知道了", "seen");
 }
 setInterval(checkUpdates, 30*60*1000);
 document.addEventListener("visibilitychange", ()=>{ if(document.visibilityState==="visible") checkUpdates(); });
