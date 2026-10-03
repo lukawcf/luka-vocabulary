@@ -80,7 +80,6 @@ node --test supabase/functions/judge/parse.test.ts
 | `supabase/` | 数据库结构和判断句子的服务器函数，见 `supabase/README.md` |
 | `audio/` | 3000 个单词的美式发音录音 |
 | `tools/gen_audio.py` | 生成录音的脚本 |
-| `claude-artifact.html` | 旧的 claude.ai 版源码，已不再维护 |
 
 ## 发音
 
